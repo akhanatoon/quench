@@ -5,6 +5,23 @@ All notable changes to `quench` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-26
+
+### Security
+- **Shell command injection fix (`internal/diff/resolver.go`)**: Replaced weak double-quote escaping with strict POSIX single-quoting and control-character stripping so filenames like `a;id;.ts` or `$(whoami).go` cannot execute shell commands.
+- **MCP `project_dir` workspace confinement (`internal/mcp/server.go`, `internal/cli/mcp.go`)**: Confines `project_dir` to the server startup directory by default (symlink & traversal protected); additional trusted roots require explicit `--allow-dir` or `QUENCH_MCP_ALLOW_DIRS`.
+- **Container hardening (`internal/sandbox/docker.go`)**: Always passes `--security-opt no-new-privileges:true --cap-drop ALL` and supports optional non-root `sandbox.user`.
+
+### Fixed
+- **Deleted files no longer produce false PASS**: Tracks `--diff-filter=D` across working tree, index, and `--base <ref>`; deleting a Go or source file runs affected reverse-importers or escalates to full suite.
+- **Transitive Go reverse-importer graph**: Upgraded Go `go/parser` dependency resolution from 1-hop to full cycle-safe transitive BFS closure (`A -> B -> C`).
+- **`--changed-lines-only` scope safety**: Restricted hunk filtering strictly to linter checks (`eslint`, `ruff`, `golangci-lint`, `go-vet`), never suppressing compiler, typecheck, or test failures.
+- **Memo cache environment invalidation**: Included `runtime.Version()`, toolchain env vars (`GOFLAGS`, `CGO_ENABLED`, `GOOS`, `GOARCH`, `NODE_ENV`, `PYTHONPATH`, `RUSTFLAGS`), deleted files, and check definitions in memo cache keys.
+- **README accuracy**: Clarified Rust uses crate-level `cargo check`/`cargo test` rather than a custom reverse-importer graph.
+
+### Added
+- **Remote Docker `copy` workspace mode (`sandbox.workspace_mode: auto|bind|copy`)**: Automatically detects remote `DOCKER_HOST` / `docker context` endpoints and syncs workspace files via streaming `tar` into an internal `/workspace` volume instead of host bind mounts.
+
 ## [0.6.0] - 2026-11-26
 
 ### Added

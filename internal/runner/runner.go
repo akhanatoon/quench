@@ -35,17 +35,28 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 		return nil, fmt.Errorf("resolve project dir: %w", err)
 	}
 
-	changed, err := diff.ChangedFiles(ctx, absDir, opts.BaseRef)
+	changeSet, err := diff.ChangedFilesDetail(ctx, absDir, opts.BaseRef)
 	if err != nil {
 		return nil, err
 	}
+	changed := changeSet.Changed
 	if changed == nil {
 		changed = []string{}
+	}
+	deleted := changeSet.Deleted
+
+	selected := filterChecks(cfg.Checks, opts.OnlyChecks)
+	if len(opts.OnlyChecks) > 0 && len(selected) == 0 {
+		return nil, fmt.Errorf("none of requested checks (%s) exist in configuration", strings.Join(opts.OnlyChecks, ", "))
 	}
 
 	var memoKey string
 	if !opts.NoCache {
-		memoKey = ComputeMemoKey(absDir, sb.ModeName(), opts.BaseRef, opts.OnlyChecks, opts.FailFast, opts.ChangedLinesOnly, changed)
+		checkSpecs := make([]string, len(selected))
+		for i, ch := range selected {
+			checkSpecs[i] = ch.Name + "|" + ch.Command + "|" + ch.Image + "|" + ch.WorkingDir
+		}
+		memoKey = ComputeMemoKeyWithEnv(absDir, sb.ModeName(), opts.BaseRef, opts.OnlyChecks, opts.FailFast, opts.ChangedLinesOnly, changed, deleted, checkSpecs)
 		if cachedRep, hit := LoadMemo(memoKey, 15*time.Minute); hit {
 			cachedRep.Cached = true
 			cachedRep.DurationMs = time.Since(started).Milliseconds()
@@ -56,11 +67,6 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 	var hunkRanges map[string][]diff.LineRange
 	if opts.ChangedLinesOnly && len(changed) > 0 {
 		hunkRanges, _ = diff.ChangedLineRanges(ctx, absDir, opts.BaseRef)
-	}
-
-	selected := filterChecks(cfg.Checks, opts.OnlyChecks)
-	if len(opts.OnlyChecks) > 0 && len(selected) == 0 {
-		return nil, fmt.Errorf("none of requested checks (%s) exist in configuration", strings.Join(opts.OnlyChecks, ", "))
 	}
 
 	type plannedCheck struct {
@@ -76,7 +82,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 	var scopeReason string
 
 	for i, ch := range selected {
-		res := diff.Resolve(absDir, cfg.Stack, ch, changed)
+		res := diff.ResolveWithDeleted(absDir, cfg.Stack, ch, changed, deleted)
 		plans[i] = plannedCheck{index: i, cfg: ch, resolved: res}
 		if res.FullSuite {
 			fullSuite = true
@@ -243,7 +249,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 					}
 					failures, truncated := parser.Parse(plan.cfg.Parser, plan.resolved.Command, parseRoot, execRes.Combined)
 					filteredOut := 0
-					if opts.ChangedLinesOnly && len(hunkRanges) > 0 && len(failures) > 0 {
+					if opts.ChangedLinesOnly && isLinterCheck(plan.cfg) && len(hunkRanges) > 0 && len(failures) > 0 {
 						var kept []Failure
 						for _, f := range failures {
 							repoRel := f.File
@@ -323,6 +329,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 		FullSuiteTriggered: fullSuite,
 		ScopeReason:        scopeReason,
 		ChangedFiles:       changed,
+		DeletedFiles:       deleted,
 		Summary:            summary,
 		Checks:             results,
 	}
@@ -372,6 +379,18 @@ func filterChecks(all []config.CheckConfig, only []string) []config.CheckConfig 
 		}
 	}
 	return out
+}
+
+func isLinterCheck(ch config.CheckConfig) bool {
+	p := strings.ToLower(strings.TrimSpace(ch.Parser))
+	switch p {
+	case "eslint", "ruff", "golangci-lint", "go-vet":
+		return true
+	case "tsc", "mypy", "pyright", "go-test", "vitest", "jest", "pytest", "rust-cargo", "rust-test":
+		return false
+	}
+	cmd := strings.ToLower(ch.Command)
+	return strings.Contains(cmd, "eslint") || strings.Contains(cmd, "ruff") || strings.Contains(cmd, "golangci-lint") || strings.Contains(cmd, "go vet")
 }
 
 func truncateTail(s string, maxLen int) string {

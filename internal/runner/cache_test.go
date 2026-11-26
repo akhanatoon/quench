@@ -262,3 +262,58 @@ func TestPruneMemo_MissingDir(t *testing.T) {
 		t.Fatal("PruneMemo must not create the directory")
 	}
 }
+
+func TestMemoKeyEnvDeletedAndCheckSpecsInvalidation(t *testing.T) {
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.go")
+	if err := os.WriteFile(fileA, []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GOFLAGS", "")
+	baseSpecs := []string{"test|go test ./...|golang:1.24-alpine|", "vet|go vet ./...|golang:1.24-alpine|"}
+	kBase := ComputeMemoKeyWithEnv(dir, "local", "HEAD", nil, false, false, []string{"a.go"}, nil, baseSpecs)
+
+	// Order of checkSpecs and deletedFiles must not change the key.
+	reorderedSpecs := []string{"vet|go vet ./...|golang:1.24-alpine|", "test|go test ./...|golang:1.24-alpine|"}
+	kReordered := ComputeMemoKeyWithEnv(dir, "local", "HEAD", nil, false, false, []string{"a.go"}, nil, reorderedSpecs)
+	if kBase != kReordered {
+		t.Fatalf("expected deterministic key regardless of checkSpecs order: %q != %q", kBase, kReordered)
+	}
+
+	// Changing GOFLAGS must produce a different memo key.
+	t.Setenv("GOFLAGS", "-tags=integration")
+	kGoFlags := ComputeMemoKeyWithEnv(dir, "local", "HEAD", nil, false, false, []string{"a.go"}, nil, baseSpecs)
+	if kGoFlags == kBase {
+		t.Fatalf("expected memo key to change when GOFLAGS changes")
+	}
+	// Reset GOFLAGS for subsequent checks.
+	t.Setenv("GOFLAGS", "")
+
+	// Adding deletedFiles must produce a different memo key (and be order-independent).
+	kDel1 := ComputeMemoKeyWithEnv(dir, "local", "HEAD", nil, false, false, []string{"a.go"}, []string{"old.go", "legacy.go"}, baseSpecs)
+	kDel2 := ComputeMemoKeyWithEnv(dir, "local", "HEAD", nil, false, false, []string{"a.go"}, []string{"legacy.go", "old.go"}, baseSpecs)
+	if kDel1 == kBase {
+		t.Fatalf("expected memo key to change when deletedFiles is non-empty")
+	}
+	if kDel1 != kDel2 {
+		t.Fatalf("expected deterministic key regardless of deletedFiles order: %q != %q", kDel1, kDel2)
+	}
+
+	// Changing a check command in checkSpecs must produce a different memo key.
+	changedSpecs := []string{"test|go test -race ./...|golang:1.24-alpine|", "vet|go vet ./...|golang:1.24-alpine|"}
+	kChangedSpec := ComputeMemoKeyWithEnv(dir, "local", "HEAD", nil, false, false, []string{"a.go"}, nil, changedSpecs)
+	if kChangedSpec == kBase {
+		t.Fatalf("expected memo key to change when check command changes")
+	}
+
+	// Deleting an existing tracked file on disk must also change ComputeMemoKey.
+	kBeforeRemove := ComputeMemoKey(dir, "local", "HEAD", nil, false, false, []string{"a.go"})
+	if err := os.Remove(fileA); err != nil {
+		t.Fatal(err)
+	}
+	kAfterRemove := ComputeMemoKey(dir, "local", "HEAD", nil, false, false, []string{"a.go"})
+	if kAfterRemove == kBeforeRemove {
+		t.Fatalf("expected memo key to change when a tracked file is deleted from disk")
+	}
+}

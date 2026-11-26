@@ -177,3 +177,144 @@ func TestGoReverseImporterAndWorkingDirAndPythonReverseTests(t *testing.T) {
 		t.Fatalf("expected reverse-imported python test, got: %+v", pyRes)
 	}
 }
+
+func TestShellQuoteInjectionSafety(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"src/app.ts", "src/app.ts"},
+		{"./internal/diff", "./internal/diff"},
+		{"a;id;.ts", "'a;id;.ts'"},
+		{"$(whoami).go", "'$(whoami).go'"},
+		{"`id`.py", "'`id`.py'"},
+		{"a|b.ts", "'a|b.ts'"},
+		{"foo'bar.ts", `'foo'\''bar.ts'`},
+		{"bad\x00\r\n;cmd.ts", "'bad;cmd.ts'"},
+		{"clean\x00\r\nname.go", "cleanname.go"},
+		{"", "''"},
+	}
+
+	for _, tc := range cases {
+		got := shellQuote(tc.in)
+		if got != tc.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	// Verify Resolve uses strict shell quoting for ScopeChangedFiles
+	repo := t.TempDir()
+	check := config.CheckConfig{
+		Name:       "lint",
+		Command:    "eslint {{files}}",
+		Scope:      config.ScopeChangedFiles,
+		Extensions: []string{".ts"},
+	}
+	res := Resolve(repo, config.StackNode, check, []string{"a;id;.ts", "foo'bar.ts"})
+	wantCmd := `eslint 'a;id;.ts' 'foo'\''bar.ts'`
+	if res.Command != wantCmd {
+		t.Fatalf("Resolve command = %q, want %q", res.Command, wantCmd)
+	}
+}
+
+func TestGoTransitiveReverseImporters3Hop(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, repo, "go.mod", "module example.com/trans\n\ngo 1.24\n")
+	writeFile(t, repo, "pkg/a/a.go", "package a\n\nfunc A() int { return 1 }\n")
+	writeFile(t, repo, "pkg/b/b.go", "package b\n\nimport \"example.com/trans/pkg/a\"\n\nfunc B() int { return a.A() }\n")
+	writeFile(t, repo, "pkg/c/c.go", "package c\n\nimport \"example.com/trans/pkg/b\"\n\nfunc C() int { return b.B() }\n")
+	writeFile(t, repo, "pkg/d/d.go", "package d\n\nfunc D() int { return 42 }\n")
+
+	ch := config.CheckConfig{
+		Name:       "test",
+		Command:    "go test -json {{packages}}",
+		Scope:      config.ScopeChangedPackages,
+		Extensions: []string{".go"},
+	}
+	res := Resolve(repo, config.StackGo, ch, []string{"pkg/a/a.go"})
+	if res.Skip || res.FullSuite {
+		t.Fatalf("unexpected skip/fullSuite: %+v", res)
+	}
+	wantPkgs := []string{"./pkg/a", "./pkg/b", "./pkg/c"}
+	if !reflect.DeepEqual(res.TargetPackages, wantPkgs) {
+		t.Fatalf("3-hop transitive reverse importers mismatch:\ngot:  %v\nwant: %v", res.TargetPackages, wantPkgs)
+	}
+}
+
+func TestDeletedFileDetectionAndResolution(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-b", "main")
+
+	writeFile(t, dir, "go.mod", "module example.com/deltest\n\ngo 1.24\n")
+	writeFile(t, dir, "pkg/a/a1.go", "package a\n\nfunc A1() int { return 1 }\n")
+	writeFile(t, dir, "pkg/a/a2.go", "package a\n\nfunc A2() int { return 2 }\n")
+	writeFile(t, dir, "pkg/b/b.go", "package b\n\nimport \"example.com/deltest/pkg/a\"\n\nfunc B() int { return a.A1() }\n")
+	writeFile(t, dir, "pkg/c/c.go", "package c\n\nimport \"example.com/deltest/pkg/b\"\n\nfunc C() int { return b.B() }\n")
+	writeFile(t, dir, "pkg/only/only.go", "package only\n\nfunc Only() {}\n")
+	writeFile(t, dir, "web/app.ts", "export const x = 1;\n")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "init")
+
+	// Delete one file from pkg/a (leaving pkg/a/a1.go intact)
+	if err := os.Remove(filepath.Join(dir, "pkg", "a", "a2.go")); err != nil {
+		t.Fatal(err)
+	}
+
+	cs, err := ChangedFilesDetail(context.Background(), dir, "")
+	if err != nil {
+		t.Fatalf("ChangedFilesDetail failed: %v", err)
+	}
+	if len(cs.Changed) != 0 {
+		t.Fatalf("expected no changed files, got: %v", cs.Changed)
+	}
+	if !reflect.DeepEqual(cs.Deleted, []string{"pkg/a/a2.go"}) {
+		t.Fatalf("expected deleted [pkg/a/a2.go], got: %v", cs.Deleted)
+	}
+
+	goCheck := config.CheckConfig{
+		Name:       "test",
+		Command:    "go test -json {{packages}}",
+		Scope:      config.ScopeChangedPackages,
+		Extensions: []string{".go"},
+	}
+
+	// Partial package deletion: should NOT skip, should include ./pkg/a and transitive importers ./pkg/b, ./pkg/c
+	resPartial := ResolveWithDeleted(dir, config.StackGo, goCheck, cs.Changed, cs.Deleted)
+	if resPartial.Skip || resPartial.FullSuite {
+		t.Fatalf("expected scoped package run for partial package deletion, got: %+v", resPartial)
+	}
+	wantPkgs := []string{"./pkg/a", "./pkg/b", "./pkg/c"}
+	if !reflect.DeepEqual(resPartial.TargetPackages, wantPkgs) {
+		t.Fatalf("target packages mismatch:\ngot:  %v\nwant: %v", resPartial.TargetPackages, wantPkgs)
+	}
+
+	// Entire package deletion (no .go files remain in pkg/only): must escalate to FullSuite (./...)
+	if err := os.Remove(filepath.Join(dir, "pkg", "only", "only.go")); err != nil {
+		t.Fatal(err)
+	}
+	resFull := ResolveWithDeleted(dir, config.StackGo, goCheck, nil, []string{"pkg/only/only.go"})
+	if resFull.Skip || !resFull.FullSuite {
+		t.Fatalf("expected FullSuite escalation when entire Go package deleted, got: %+v", resFull)
+	}
+	if resFull.Command != "go test -json ./..." {
+		t.Fatalf("expected full suite command, got: %q", resFull.Command)
+	}
+	if resFull.FullSuiteReason != "deleted Go file: pkg/only/only.go" {
+		t.Fatalf("unexpected full suite reason: %q", resFull.FullSuiteReason)
+	}
+
+	// Non-Go deleted file in ScopeChangedFiles must escalate to FullSuite rather than skip
+	tsCheck := config.CheckConfig{
+		Name:       "lint",
+		Command:    "eslint {{files}}",
+		Scope:      config.ScopeChangedFiles,
+		Extensions: []string{".ts"},
+	}
+	resTS := ResolveWithDeleted(dir, config.StackNode, tsCheck, nil, []string{"web/app.ts"})
+	if resTS.Skip || !resTS.FullSuite {
+		t.Fatalf("expected FullSuite escalation for deleted .ts file, got: %+v", resTS)
+	}
+	if resTS.FullSuiteReason != "deleted source file: web/app.ts" {
+		t.Fatalf("unexpected ts full suite reason: %q", resTS.FullSuiteReason)
+	}
+}

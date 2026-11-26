@@ -44,6 +44,7 @@ type RunReport struct {
 	FullSuiteTriggered bool          `json:"full_suite_triggered,omitempty"`
 	ScopeReason        string        `json:"scope_reason,omitempty"`
 	ChangedFiles       []string      `json:"changed_files"`
+	DeletedFiles       []string      `json:"deleted_files,omitempty"`
 	Summary            Summary       `json:"summary"`
 	OutputStats        *OutputStats  `json:"output_stats,omitempty"`
 	Checks             []CheckResult `json:"checks"`

@@ -21,6 +21,10 @@ const (
 	ModeDocker = "docker"
 	ModeLocal  = "local"
 
+	WorkspaceModeAuto = "auto"
+	WorkspaceModeBind = "bind"
+	WorkspaceModeCopy = "copy"
+
 	ScopeProject         = "project"
 	ScopeChangedFiles    = "changed_files"
 	ScopeChangedPackages = "changed_packages"
@@ -50,14 +54,16 @@ type Config struct {
 }
 
 type SandboxConfig struct {
-	Image        string   `yaml:"image" json:"image"`
-	IdleTimeout  string   `yaml:"idle_timeout,omitempty" json:"idle_timeout,omitempty"`
-	Network      string   `yaml:"network,omitempty" json:"network,omitempty"`
-	SyncDeps     *bool    `yaml:"sync_deps,omitempty" json:"sync_deps,omitempty"`
-	SetupCommand string   `yaml:"setup_command,omitempty" json:"setup_command,omitempty"`
-	CachePaths   []string `yaml:"cache_paths,omitempty" json:"cache_paths,omitempty"`
-	Memory       string   `yaml:"memory,omitempty" json:"memory,omitempty"`
-	CPUs         string   `yaml:"cpus,omitempty" json:"cpus,omitempty"`
+	Image         string   `yaml:"image" json:"image"`
+	IdleTimeout   string   `yaml:"idle_timeout,omitempty" json:"idle_timeout,omitempty"`
+	Network       string   `yaml:"network,omitempty" json:"network,omitempty"`
+	SyncDeps      *bool    `yaml:"sync_deps,omitempty" json:"sync_deps,omitempty"`
+	SetupCommand  string   `yaml:"setup_command,omitempty" json:"setup_command,omitempty"`
+	CachePaths    []string `yaml:"cache_paths,omitempty" json:"cache_paths,omitempty"`
+	Memory        string   `yaml:"memory,omitempty" json:"memory,omitempty"`
+	CPUs          string   `yaml:"cpus,omitempty" json:"cpus,omitempty"`
+	WorkspaceMode string   `yaml:"workspace_mode,omitempty" json:"workspace_mode,omitempty"`
+	User          string   `yaml:"user,omitempty" json:"user,omitempty"`
 }
 
 var memoryPattern = regexp.MustCompile(`(?i)^[0-9]+(b|k|m|g)?$`)
@@ -164,6 +170,9 @@ func applyDefaults(cfg *Config, projectDir string) {
 	if cfg.Sandbox.Network == "" {
 		cfg.Sandbox.Network = "bridge"
 	}
+	if cfg.Sandbox.WorkspaceMode == "" {
+		cfg.Sandbox.WorkspaceMode = WorkspaceModeAuto
+	}
 	if len(cfg.Sandbox.CachePaths) == 0 && detected != nil {
 		cfg.Sandbox.CachePaths = detected.Sandbox.CachePaths
 	}
@@ -197,6 +206,12 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Sandbox.Network != "" && cfg.Sandbox.Network != "bridge" && cfg.Sandbox.Network != "none" && cfg.Sandbox.Network != "host" {
 		return fmt.Errorf("unsupported sandbox.network %q (expected bridge, none, or host)", cfg.Sandbox.Network)
+	}
+	if cfg.Sandbox.WorkspaceMode != "" &&
+		cfg.Sandbox.WorkspaceMode != WorkspaceModeAuto &&
+		cfg.Sandbox.WorkspaceMode != WorkspaceModeBind &&
+		cfg.Sandbox.WorkspaceMode != WorkspaceModeCopy {
+		return fmt.Errorf("unsupported sandbox.workspace_mode %q (expected auto, bind, or copy)", cfg.Sandbox.WorkspaceMode)
 	}
 	if cfg.Sandbox.Memory != "" && !memoryPattern.MatchString(cfg.Sandbox.Memory) {
 		return fmt.Errorf("invalid sandbox.memory %q (expected e.g. 512m or 1g)", cfg.Sandbox.Memory)

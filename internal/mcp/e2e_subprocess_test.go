@@ -90,7 +90,7 @@ func TestMCPRealSubprocessStdio(t *testing.T) {
 	repo := initSubprocessBrokenGoRepo(t)
 
 	// Spawn the compiled binary as a real OS subprocess over stdin/stdout pipes.
-	proc := exec.CommandContext(ctx, binPath, "mcp")
+	proc := exec.CommandContext(ctx, binPath, "mcp", "--allow-dir", repo)
 	stdin, err := proc.StdinPipe()
 	if err != nil {
 		t.Fatalf("stdin pipe: %v", err)

@@ -19,18 +19,47 @@ import (
 const DefaultProtocolVersion = "2024-11-05"
 
 type Server struct {
-	defaultDir string
-	version    string
-	writeMu    sync.Mutex
+	defaultDir   string
+	allowedRoots []string
+	version      string
+	writeMu      sync.Mutex
 }
 
 func NewServer(defaultDir string, version string) *Server {
+	return NewServerWithAllowedRoots(defaultDir, version, nil)
+}
+
+func NewServerWithAllowedRoots(defaultDir string, version string, allowedRoots []string) *Server {
 	if version == "" {
 		version = "0.1.0"
 	}
+	if strings.TrimSpace(defaultDir) == "" {
+		defaultDir = "."
+	}
+	roots := make([]string, 0, len(allowedRoots)+1)
+	seen := make(map[string]struct{}, len(allowedRoots)+1)
+	addRoot := func(r string) {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			return
+		}
+		canon, err := canonicalPath(r)
+		if err != nil {
+			return
+		}
+		if _, ok := seen[canon]; !ok {
+			seen[canon] = struct{}{}
+			roots = append(roots, canon)
+		}
+	}
+	addRoot(defaultDir)
+	for _, r := range allowedRoots {
+		addRoot(r)
+	}
 	return &Server{
-		defaultDir: defaultDir,
-		version:    version,
+		defaultDir:   defaultDir,
+		allowedRoots: roots,
+		version:      version,
 	}
 }
 
@@ -330,7 +359,76 @@ func (s *Server) resolveDir(override string) (string, error) {
 	if target == "" {
 		target = "."
 	}
-	return filepath.Abs(target)
+	cand, err := canonicalPath(target)
+	if err != nil {
+		return "", err
+	}
+
+	roots := s.allowedRoots
+	if len(roots) == 0 {
+		def := s.defaultDir
+		if strings.TrimSpace(def) == "" {
+			def = "."
+		}
+		if canonDef, cErr := canonicalPath(def); cErr == nil {
+			roots = []string{canonDef}
+		}
+	}
+
+	for _, root := range roots {
+		canonRoot, rErr := canonicalPath(root)
+		if rErr != nil {
+			continue
+		}
+		if isWithinRoot(cand, canonRoot) {
+			return cand, nil
+		}
+	}
+	return "", fmt.Errorf("project_dir %q is outside allowed MCP workspace roots", target)
+}
+
+func canonicalPath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved), nil
+	}
+	// Resolve symlinks on the nearest existing ancestor when target doesn't exist yet.
+	curr := abs
+	var tail []string
+	for {
+		parent := filepath.Dir(curr)
+		if parent == curr {
+			break
+		}
+		tail = append(tail, filepath.Base(curr))
+		curr = parent
+		if resolved, err := filepath.EvalSymlinks(curr); err == nil {
+			parts := make([]string, 0, len(tail)+1)
+			parts = append(parts, resolved)
+			for i := len(tail) - 1; i >= 0; i-- {
+				parts = append(parts, tail[i])
+			}
+			return filepath.Clean(filepath.Join(parts...)), nil
+		}
+	}
+	return filepath.Clean(abs), nil
+}
+
+func isWithinRoot(candidate, root string) bool {
+	rel, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return !filepath.IsAbs(rel)
 }
 
 func jsonToolResult(v any) (*callToolResult, *rpcError) {

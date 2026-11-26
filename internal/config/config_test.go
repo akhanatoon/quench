@@ -333,3 +333,60 @@ func TestLoadResourceControlsYAML(t *testing.T) {
 		t.Fatalf("unexpected: %+v", cfg)
 	}
 }
+
+func TestValidateWorkspaceMode(t *testing.T) {
+	base := func() *Config {
+		return &Config{Mode: ModeDocker, Checks: []CheckConfig{{Name: "a", Command: "true", Scope: ScopeProject}}}
+	}
+	for _, m := range []string{"", WorkspaceModeAuto, WorkspaceModeBind, WorkspaceModeCopy} {
+		c := base()
+		c.Sandbox.WorkspaceMode = m
+		if err := Validate(c); err != nil {
+			t.Errorf("workspace_mode %q should be valid: %v", m, err)
+		}
+	}
+	for _, m := range []string{"remote", "volume", "rsync", "COPY", "Auto"} {
+		c := base()
+		c.Sandbox.WorkspaceMode = m
+		if err := Validate(c); err == nil {
+			t.Errorf("workspace_mode %q should be invalid", m)
+		}
+	}
+}
+
+func TestLoadWorkspaceModeAndUserYAML(t *testing.T) {
+	dir := t.TempDir()
+	y := "mode: docker\nsandbox:\n  image: golang:1.24-alpine\n  workspace_mode: copy\n  user: \"1000:1000\"\nchecks:\n  - name: a\n    command: echo hi\n"
+	if err := os.WriteFile(filepath.Join(dir, ConfigFileName), []byte(y), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sandbox.WorkspaceMode != WorkspaceModeCopy || cfg.Sandbox.User != "1000:1000" {
+		t.Fatalf("unexpected sandbox config: %+v", cfg.Sandbox)
+	}
+
+	// Omitting workspace_mode should default to "auto".
+	yDefault := "mode: docker\nsandbox:\n  image: golang:1.24-alpine\nchecks:\n  - name: a\n    command: echo hi\n"
+	if err := os.WriteFile(filepath.Join(dir, ConfigFileName), []byte(yDefault), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgDef, _, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfgDef.Sandbox.WorkspaceMode != WorkspaceModeAuto {
+		t.Fatalf("expected default workspace_mode %q, got %q", WorkspaceModeAuto, cfgDef.Sandbox.WorkspaceMode)
+	}
+
+	// Invalid workspace_mode in YAML must fail Load.
+	yBad := "mode: docker\nsandbox:\n  workspace_mode: invalid\nchecks:\n  - name: a\n    command: echo hi\n"
+	if err := os.WriteFile(filepath.Join(dir, ConfigFileName), []byte(yBad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Load(dir); err == nil {
+		t.Fatalf("expected error for invalid workspace_mode in YAML")
+	}
+}

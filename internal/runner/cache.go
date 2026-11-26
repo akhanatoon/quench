@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -22,8 +23,20 @@ const (
 	memoMaxHashFileBytes = 2 * 1024 * 1024 // 2 MiB
 )
 
-// ComputeMemoKey computes a deterministic SHA256 hex key incorporating all run options
-// plus the content hash (or size+mtime when >2MB) of each changed file and quench.yaml if present.
+var memoEnvVars = []string{
+	"GOFLAGS",
+	"CGO_ENABLED",
+	"GOOS",
+	"GOARCH",
+	"GOROOT",
+	"NODE_ENV",
+	"PYTHONPATH",
+	"RUSTFLAGS",
+}
+
+// ComputeMemoKey computes a deterministic SHA256 hex key incorporating all run options,
+// toolchain environment variables, Go runtime version, the content hash (or size+mtime when >2MB)
+// of each changed file, and quench.yaml if present.
 func ComputeMemoKey(
 	projectDir string,
 	mode string,
@@ -32,6 +45,33 @@ func ComputeMemoKey(
 	failFast bool,
 	changedLinesOnly bool,
 	changedFiles []string,
+) string {
+	return ComputeMemoKeyWithEnv(
+		projectDir,
+		mode,
+		baseRef,
+		onlyChecks,
+		failFast,
+		changedLinesOnly,
+		changedFiles,
+		nil,
+		nil,
+	)
+}
+
+// ComputeMemoKeyWithEnv computes a deterministic SHA256 hex key incorporating all run options,
+// toolchain environment variables, runtime version, deleted files, check specifications
+// (name + command + image + working_dir), changed file content hashes, and quench.yaml if present.
+func ComputeMemoKeyWithEnv(
+	projectDir string,
+	mode string,
+	baseRef string,
+	onlyChecks []string,
+	failFast bool,
+	changedLinesOnly bool,
+	changedFiles []string,
+	deletedFiles []string,
+	checkSpecs []string,
 ) string {
 	h := sha256.New()
 
@@ -45,6 +85,11 @@ func ComputeMemoKey(
 	writeField(h, "base", baseRef)
 	writeField(h, "failFast", strconv.FormatBool(failFast))
 	writeField(h, "changedLinesOnly", strconv.FormatBool(changedLinesOnly))
+	writeField(h, "runtime", runtime.Version())
+
+	for _, envName := range memoEnvVars {
+		writeField(h, "env:"+envName, os.Getenv(envName))
+	}
 
 	sortedChecks := make([]string, len(onlyChecks))
 	copy(sortedChecks, onlyChecks)
@@ -70,6 +115,26 @@ func ComputeMemoKey(
 			fullPath = filepath.Join(absDir, filepath.FromSlash(rel))
 		}
 		hashFileInto(h, "file:"+rel, fullPath)
+	}
+
+	// Normalize, sort, and deduplicate deleted files.
+	normDeleted := make([]string, 0, len(deletedFiles))
+	for _, f := range deletedFiles {
+		normDeleted = append(normDeleted, filepath.ToSlash(filepath.Clean(f)))
+	}
+	slices.Sort(normDeleted)
+	normDeleted = slices.Compact(normDeleted)
+	for _, rel := range normDeleted {
+		writeField(h, "deleted", rel)
+	}
+
+	// Sort and deduplicate check specs (name + command + image + working_dir).
+	normSpecs := make([]string, len(checkSpecs))
+	copy(normSpecs, checkSpecs)
+	slices.Sort(normSpecs)
+	normSpecs = slices.Compact(normSpecs)
+	for _, spec := range normSpecs {
+		writeField(h, "checkSpec", spec)
 	}
 
 	return hex.EncodeToString(h.Sum(nil))

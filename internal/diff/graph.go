@@ -15,7 +15,7 @@ import (
 var goModPathRe = regexp.MustCompile(`(?m)^module\s+(\S+)`)
 
 // ExpandGoReverseImporters scans Go imports in repoDir using go/parser (ImportsOnly)
-// and adds any 1-hop direct importer packages of the changed packages.
+// and computes the full transitive reverse-importer closure of the changed packages via BFS.
 func ExpandGoReverseImporters(repoDir string, changedPkgs []string) []string {
 	if len(changedPkgs) == 0 {
 		return nil
@@ -73,16 +73,28 @@ func ExpandGoReverseImporters(repoDir string, changedPkgs []string) []string {
 		return nil
 	})
 
-	resultSet := make(map[string]struct{}, len(changedPkgs))
+	visited := make(map[string]struct{}, len(changedPkgs))
+	queue := make([]string, 0, len(changedPkgs))
 	for _, pkg := range changedPkgs {
-		resultSet[pkg] = struct{}{}
-		for importer := range revGraph[pkg] {
-			resultSet[importer] = struct{}{}
+		if _, ok := visited[pkg]; !ok {
+			visited[pkg] = struct{}{}
+			queue = append(queue, pkg)
 		}
 	}
 
-	out := make([]string, 0, len(resultSet))
-	for pkg := range resultSet {
+	for len(queue) > 0 {
+		curr := queue[0]
+		queue = queue[1:]
+		for importer := range revGraph[curr] {
+			if _, ok := visited[importer]; !ok {
+				visited[importer] = struct{}{}
+				queue = append(queue, importer)
+			}
+		}
+	}
+
+	out := make([]string, 0, len(visited))
+	for pkg := range visited {
 		out = append(out, pkg)
 	}
 	sort.Strings(out)

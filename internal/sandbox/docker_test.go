@@ -1,6 +1,10 @@
 package sandbox
 
 import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,5 +169,154 @@ func TestResourceArgs(t *testing.T) {
 	got = strings.Join(resourceArgs(config.SandboxConfig{Memory: "512m", CPUs: "0.5"}), " ")
 	if got != "--memory 512m --memory-swap 512m --cpus 0.5" {
 		t.Fatalf("both: %q", got)
+	}
+}
+
+func TestSecurityArgs(t *testing.T) {
+	got := strings.Join(securityArgs(config.SandboxConfig{}), " ")
+	want := "--security-opt no-new-privileges:true --cap-drop ALL"
+	if got != want {
+		t.Fatalf("default securityArgs = %q, want %q", got, want)
+	}
+
+	got = strings.Join(securityArgs(config.SandboxConfig{User: "1000:1000"}), " ")
+	want = "--security-opt no-new-privileges:true --cap-drop ALL --user 1000:1000"
+	if got != want {
+		t.Fatalf("non-root securityArgs = %q, want %q", got, want)
+	}
+
+	got = strings.Join(securityArgs(config.SandboxConfig{User: "   "}), " ")
+	want = "--security-opt no-new-privileges:true --cap-drop ALL"
+	if got != want {
+		t.Fatalf("blank user securityArgs = %q, want %q", got, want)
+	}
+}
+
+func TestRemoteDockerHost(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"", false},
+		{"unix:///var/run/docker.sock", false},
+		{"npipe:////./pipe/docker_engine", false},
+		{"tcp://localhost:2375", false},
+		{"tcp://127.0.0.1:2375", false},
+		{"tcp://[::1]:2375", false},
+		{"https://127.0.0.1:2376", false},
+		{"ssh://kiri", true},
+		{"ssh://user@192.168.1.50", true},
+		{"SSH://build-box", true},
+		{"tcp://10.0.0.5:2375", true},
+		{"https://docker.example.com:2376", true},
+	}
+	for _, tc := range cases {
+		if got := isRemoteDockerHost(tc.host); got != tc.want {
+			t.Errorf("isRemoteDockerHost(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestRemoteDockerContextEnv(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "ssh://kiri")
+	if !IsRemoteDockerContext(context.Background()) {
+		t.Fatalf("expected IsRemoteDockerContext=true for DOCKER_HOST=ssh://kiri")
+	}
+
+	t.Setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+	if IsRemoteDockerContext(context.Background()) {
+		t.Fatalf("expected IsRemoteDockerContext=false for unix socket")
+	}
+
+	t.Setenv("DOCKER_HOST", "tcp://127.0.0.1:2375")
+	if IsRemoteDockerContext(context.Background()) {
+		t.Fatalf("expected IsRemoteDockerContext=false for local tcp loopback")
+	}
+}
+
+func TestRemoteCopyModeContainerArgs(t *testing.T) {
+	dir := t.TempDir()
+	h := ProjectHash8(dir)
+	hostPath := filepath.ToSlash(dir)
+
+	cfg := &config.Config{
+		Stack: config.StackGo,
+		Sandbox: config.SandboxConfig{
+			Image:         "golang:1.24-alpine",
+			WorkspaceMode: config.WorkspaceModeCopy,
+			User:          "1000:1000",
+			CachePaths:    []string{"/go/pkg/mod"},
+		},
+	}
+	ds := NewDocker(dir, cfg)
+
+	copyArgs := ds.buildRunArgs(config.WorkspaceModeCopy)
+	joinedCopy := strings.Join(copyArgs, " ")
+
+	// Must NOT contain host bind mount for /workspace
+	if strings.Contains(joinedCopy, hostPath+":/workspace") {
+		t.Fatalf("copy mode must not bind-mount host path, got args: %s", joinedCopy)
+	}
+	// Must contain named workspace volume quench-ws-<hash8>:/workspace
+	wantVolMount := "-v " + WorkspaceVolumePrefix + h + ":/workspace"
+	if !strings.Contains(joinedCopy, wantVolMount) {
+		t.Fatalf("copy mode missing workspace volume mount %q in: %s", wantVolMount, joinedCopy)
+	}
+	if !strings.Contains(joinedCopy, "--security-opt no-new-privileges:true") ||
+		!strings.Contains(joinedCopy, "--cap-drop ALL") ||
+		!strings.Contains(joinedCopy, "--user 1000:1000") {
+		t.Fatalf("copy mode missing security flags in: %s", joinedCopy)
+	}
+
+	// Bind mode still mounts host path
+	bindArgs := ds.buildRunArgs(config.WorkspaceModeBind)
+	joinedBind := strings.Join(bindArgs, " ")
+	if !strings.Contains(joinedBind, "-v "+hostPath+":/workspace") {
+		t.Fatalf("bind mode missing host bind mount in: %s", joinedBind)
+	}
+}
+
+func TestRemoteCopyTarSkipsBuildDirsAndPreservesCachePaths(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644)
+	for _, skip := range []string{".git", "node_modules", "target", "dist", ".venv", "__pycache__"} {
+		_ = os.MkdirAll(filepath.Join(dir, skip), 0o755)
+		_ = os.WriteFile(filepath.Join(dir, skip, "ignored.txt"), []byte("nope"), 0o644)
+	}
+
+	var buf bytes.Buffer
+	if err := writeWorkspaceTar(dir, &buf); err != nil {
+		t.Fatalf("writeWorkspaceTar failed: %v", err)
+	}
+
+	tr := tar.NewReader(&buf)
+	found := make(map[string]bool)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar read error: %v", err)
+		}
+		found[hdr.Name] = true
+	}
+	if !found["main.go"] {
+		t.Fatalf("expected main.go in tar archive, got: %+v", found)
+	}
+	for name := range found {
+		for skip := range copySkipDirs {
+			if name == skip || strings.HasPrefix(name, skip+"/") {
+				t.Fatalf("expected %q to be skipped from tar archive", name)
+			}
+		}
+	}
+
+	cleanCmd := workspaceCopyCleanCmd([]string{"/root/.npm", "/workspace/node_modules"})
+	if !strings.Contains(cleanCmd, "'/workspace/node_modules'") {
+		t.Fatalf("expected clean command to preserve /workspace/node_modules, got: %s", cleanCmd)
+	}
+	if !strings.Contains(cleanCmd, "tar -xf - -C /workspace") {
+		t.Fatalf("expected clean command to extract tar into /workspace, got: %s", cleanCmd)
 	}
 }

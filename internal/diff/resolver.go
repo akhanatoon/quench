@@ -4,6 +4,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -79,7 +80,13 @@ func CheckCriticalTrigger(stack config.StackType, changedFiles []string) (bool, 
 
 // Resolve builds the concrete command to execute (or marks Skip=true) for a check given changedFiles.
 func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, changedFiles []string) ResolvedCheck {
-	if len(changedFiles) == 0 {
+	return ResolveWithDeleted(repoDir, stack, check, changedFiles, nil)
+}
+
+// ResolveWithDeleted builds the concrete command to execute (or marks Skip=true) for a check
+// given both existing changedFiles and deletedFiles.
+func ResolveWithDeleted(repoDir string, stack config.StackType, check config.CheckConfig, changedFiles []string, deletedFiles []string) ResolvedCheck {
+	if len(changedFiles) == 0 && len(deletedFiles) == 0 {
 		return ResolvedCheck{
 			WorkingDir: check.WorkingDir,
 			Skip:       true,
@@ -94,10 +101,12 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 
 	workDir := repoDir
 	scopedFiles := changedFiles
+	scopedDeleted := deletedFiles
 	if check.WorkingDir != "" {
 		workDir = filepath.Join(repoDir, filepath.FromSlash(check.WorkingDir))
 		scopedFiles = filterToWorkingDir(changedFiles, check.WorkingDir)
-		// Also check if root quench.yaml changed
+		scopedDeleted = filterToWorkingDir(deletedFiles, check.WorkingDir)
+		// Also check if root quench.yaml changed or was deleted
 		for _, f := range changedFiles {
 			if globalCriticalFiles[f] {
 				return ResolvedCheck{
@@ -109,7 +118,18 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 				}
 			}
 		}
-		if len(scopedFiles) == 0 {
+		for _, f := range deletedFiles {
+			if globalCriticalFiles[f] {
+				return ResolvedCheck{
+					Command:         expandFullSuiteCommand(workDir, check.Command),
+					WorkingDir:      check.WorkingDir,
+					FullSuite:       true,
+					FullSuiteReason: "critical file deleted: " + f,
+					MatchedFiles:    filterByExtensions(scopedFiles, check.Extensions),
+				}
+			}
+		}
+		if len(scopedFiles) == 0 && len(scopedDeleted) == 0 {
 			return ResolvedCheck{
 				WorkingDir: check.WorkingDir,
 				Skip:       true,
@@ -118,10 +138,10 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 		}
 	}
 
-	fullSuite, reason := CheckCriticalTrigger(effectiveStack, scopedFiles)
 	matched := filterByExtensions(scopedFiles, check.Extensions)
+	matchedDeleted := filterByExtensions(scopedDeleted, check.Extensions)
 
-	if fullSuite {
+	if fullSuite, reason := CheckCriticalTrigger(effectiveStack, scopedFiles); fullSuite {
 		cmd := expandFullSuiteCommand(workDir, check.Command)
 		return ResolvedCheck{
 			Command:         cmd,
@@ -131,8 +151,18 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 			MatchedFiles:    matched,
 		}
 	}
+	if fullSuite, reason := CheckCriticalTrigger(effectiveStack, scopedDeleted); fullSuite {
+		cmd := expandFullSuiteCommand(workDir, check.Command)
+		return ResolvedCheck{
+			Command:         cmd,
+			WorkingDir:      check.WorkingDir,
+			FullSuite:       true,
+			FullSuiteReason: "critical file deleted: " + reason,
+			MatchedFiles:    matched,
+		}
+	}
 
-	if len(matched) == 0 {
+	if len(matched) == 0 && len(matchedDeleted) == 0 {
 		return ResolvedCheck{
 			WorkingDir: check.WorkingDir,
 			Skip:       true,
@@ -142,6 +172,15 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 
 	switch check.Scope {
 	case config.ScopeProject:
+		if len(matched) == 0 && len(matchedDeleted) > 0 {
+			return ResolvedCheck{
+				Command:         expandFullSuiteCommand(workDir, check.Command),
+				WorkingDir:      check.WorkingDir,
+				FullSuite:       true,
+				FullSuiteReason: "deleted source file: " + matchedDeleted[0],
+				MatchedFiles:    matched,
+			}
+		}
 		cmd := replacePlaceholders(check.Command, quoteArgs(matched), "./...", ".")
 		return ResolvedCheck{
 			Command:      cmd,
@@ -150,15 +189,43 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 		}
 
 	case config.ScopeChangedPackages:
-		pkgs := resolveGoPackages(workDir, matched)
+		for _, f := range matchedDeleted {
+			if !strings.HasSuffix(strings.ToLower(f), ".go") {
+				continue
+			}
+			dir := path.Dir(f)
+			fullDir := filepath.Join(workDir, filepath.FromSlash(dir))
+			if !dirHasGoFiles(fullDir) {
+				return ResolvedCheck{
+					Command:         expandFullSuiteCommand(workDir, check.Command),
+					WorkingDir:      check.WorkingDir,
+					FullSuite:       true,
+					FullSuiteReason: "deleted Go file: " + f,
+					MatchedFiles:    matched,
+				}
+			}
+		}
+		allGoFiles := make([]string, 0, len(matched)+len(matchedDeleted))
+		allGoFiles = append(allGoFiles, matched...)
+		allGoFiles = append(allGoFiles, matchedDeleted...)
+		pkgs := resolveGoPackages(workDir, allGoFiles)
 		if len(pkgs) == 0 {
+			if len(matchedDeleted) > 0 {
+				return ResolvedCheck{
+					Command:         expandFullSuiteCommand(workDir, check.Command),
+					WorkingDir:      check.WorkingDir,
+					FullSuite:       true,
+					FullSuiteReason: "deleted source file: " + matchedDeleted[0],
+					MatchedFiles:    matched,
+				}
+			}
 			return ResolvedCheck{
 				WorkingDir: check.WorkingDir,
 				Skip:       true,
 				SkipReason: "no valid Go packages in changed paths",
 			}
 		}
-		// Expand 1-hop direct Go importers so breaking exported signatures is caught
+		// Expand transitive Go importers so breaking exported signatures is caught
 		pkgs = ExpandGoReverseImporters(workDir, pkgs)
 		cmd := replacePlaceholders(check.Command, quoteArgs(matched), strings.Join(quoteArgs(pkgs), " "), strings.Join(quoteArgs(pkgs), " "))
 		return ResolvedCheck{
@@ -169,6 +236,15 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 		}
 
 	case config.ScopeMappedTests:
+		if len(matchedDeleted) > 0 {
+			return ResolvedCheck{
+				Command:         expandFullSuiteCommand(workDir, check.Command),
+				WorkingDir:      check.WorkingDir,
+				FullSuite:       true,
+				FullSuiteReason: "deleted source file: " + matchedDeleted[0],
+				MatchedFiles:    matched,
+			}
+		}
 		tests := resolvePythonTests(workDir, matched)
 		if len(tests) == 0 {
 			return ResolvedCheck{
@@ -188,6 +264,15 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 	case config.ScopeChangedFiles:
 		fallthrough
 	default:
+		if len(matchedDeleted) > 0 {
+			return ResolvedCheck{
+				Command:         expandFullSuiteCommand(workDir, check.Command),
+				WorkingDir:      check.WorkingDir,
+				FullSuite:       true,
+				FullSuiteReason: "deleted source file: " + matchedDeleted[0],
+				MatchedFiles:    matched,
+			}
+		}
 		targets := matched
 		if effectiveStack == config.StackNode &&
 			strings.Contains(strings.ToLower(check.Name), "test") &&
@@ -421,14 +506,22 @@ func replacePlaceholders(cmd string, quotedFiles []string, pkgStr string, testsS
 	return strings.TrimSpace(out)
 }
 
+var safeShellArgRe = regexp.MustCompile(`^[a-zA-Z0-9_./:@+-]+$`)
+
+// shellQuote safely quotes an argument for POSIX shells, stripping NUL/CR/LF
+// and single-quoting any value that contains characters outside safe ASCII path chars.
+func shellQuote(s string) string {
+	s = strings.NewReplacer("\x00", "", "\r", "", "\n", "").Replace(s)
+	if safeShellArgRe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func quoteArgs(items []string) []string {
 	out := make([]string, len(items))
 	for i, s := range items {
-		if strings.ContainsAny(s, " \t'\"()[]") {
-			out[i] = `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
-		} else {
-			out[i] = s
-		}
+		out[i] = shellQuote(s)
 	}
 	return out
 }

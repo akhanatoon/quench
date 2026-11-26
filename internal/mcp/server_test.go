@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/akhanatoon/quench/internal/mcp"
@@ -50,7 +51,7 @@ func TestMCPStdioVerifyAndFixFlow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	srv := mcp.NewServer(".", "0.1.0")
+	srv := mcp.NewServerWithAllowedRoots(".", "0.1.0", []string{repo})
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.Serve(ctx, serverIn, serverOut)
@@ -146,6 +147,83 @@ func TestMCPStdioVerifyAndFixFlow(t *testing.T) {
 	if passReport.Status != runner.StatusPassed || passReport.Summary.Passed != 2 {
 		t.Fatalf("expected passed report after fix, got %+v", passReport)
 	}
+
+	_ = clientOut.Close()
+	if err := <-errCh; err != nil {
+		t.Fatalf("server exited with error: %v", err)
+	}
+}
+
+func TestMCPProjectDirConfinement(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+
+	clientIn, serverOut := io.Pipe()
+	serverIn, clientOut := io.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv := mcp.NewServer(workspace, "0.7.0")
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.Serve(ctx, serverIn, serverOut)
+	}()
+
+	reader := bufio.NewReader(clientIn)
+	send := func(msg map[string]any) map[string]any {
+		t.Helper()
+		raw, _ := json.Marshal(msg)
+		if _, err := clientOut.Write(append(raw, '\n')); err != nil {
+			t.Fatal(err)
+		}
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(line, &resp); err != nil {
+			t.Fatalf("unmarshal response %q: %v", string(line), err)
+		}
+		return resp
+	}
+
+	assertRejected := func(id int, tool string, dir string) {
+		t.Helper()
+		resp := send(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      id,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": tool,
+				"arguments": map[string]any{
+					"project_dir": dir,
+					"mode":        "local",
+				},
+			},
+		})
+		resMap, ok := resp["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected tool result object, got: %+v", resp)
+		}
+		isErr, _ := resMap["isError"].(bool)
+		if !isErr {
+			t.Fatalf("expected isError=true for %s with dir %q, got: %+v", tool, dir, resMap)
+		}
+		text := resMap["content"].([]any)[0].(map[string]any)["text"].(string)
+		if !strings.Contains(text, "outside allowed MCP workspace roots") {
+			t.Fatalf("expected confinement error message, got: %q", text)
+		}
+	}
+
+	// 1. Outside directory must be rejected across all tools
+	assertRejected(1, "verify_changes", outside)
+	assertRejected(2, "sandbox_status", outside)
+	assertRejected(3, "sandbox_reset", outside)
+
+	// 2. Parent traversal (../) must be rejected
+	assertRejected(4, "verify_changes", filepath.Join(workspace, ".."))
+	assertRejected(5, "verify_changes", filepath.Join(workspace, "sub", "..", "..", "outside"))
 
 	_ = clientOut.Close()
 	if err := <-errCh; err != nil {
