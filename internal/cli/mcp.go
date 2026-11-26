@@ -11,7 +11,7 @@ import (
 )
 
 func newMCPCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "Start the stdio Model Context Protocol (MCP) server for coding agents",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -26,4 +26,6 @@ func newMCPCmd() *cobra.Command {
 			return srv.Serve(ctx, os.Stdin, os.Stdout)
 		},
 	}
+	cmd.AddCommand(newMCPInstallCmd())
+	return cmd
 }

@@ -136,3 +136,44 @@ func TestResolveGoPackagesPythonTestsAndCriticalTrigger(t *testing.T) {
 		t.Fatalf("unexpected python mapped command: %+v", pyRes)
 	}
 }
+
+func TestGoReverseImporterAndWorkingDirAndPythonReverseTests(t *testing.T) {
+	// 1. Go 1-hop reverse importer expansion inside a monorepo working_dir
+	mono := t.TempDir()
+	writeFile(t, mono, "backend/go.mod", "module example.com/svc\n\ngo 1.24\n")
+	writeFile(t, mono, "backend/pkg/core/core.go", "package core\n\nfunc Value() int { return 1 }\n")
+	writeFile(t, mono, "backend/pkg/api/api.go", "package api\n\nimport \"example.com/svc/pkg/core\"\n\nfunc Handle() int { return core.Value() }\n")
+	writeFile(t, mono, "backend/pkg/unrelated/u.go", "package unrelated\n")
+
+	ch := config.CheckConfig{
+		Name:       "backend-test",
+		Command:    "go test -json {{packages}}",
+		Scope:      config.ScopeChangedPackages,
+		Stack:      config.StackGo,
+		WorkingDir: "backend",
+		Extensions: []string{".go"},
+	}
+	res := Resolve(mono, config.StackPolyglot, ch, []string{"backend/pkg/core/core.go", "frontend/app.tsx"})
+	if res.Skip {
+		t.Fatalf("expected backend check not to skip: %+v", res)
+	}
+	wantPkgs := []string{"./pkg/api", "./pkg/core"}
+	if !reflect.DeepEqual(res.TargetPackages, wantPkgs) {
+		t.Fatalf("reverse importer expansion mismatch:\ngot:  %v\nwant: %v", res.TargetPackages, wantPkgs)
+	}
+
+	// 2. Python reverse test import scan (test filename doesn't match module name)
+	pyRepo := t.TempDir()
+	writeFile(t, pyRepo, "app/pricing.py", "def discount(): return 5\n")
+	writeFile(t, pyRepo, "tests/test_checkout_flow.py", "from app.pricing import discount\n\ndef test_flow(): assert discount() == 5\n")
+	pyCheck := config.CheckConfig{
+		Name:       "test",
+		Command:    "pytest -q {{tests}}",
+		Scope:      config.ScopeMappedTests,
+		Extensions: []string{".py"},
+	}
+	pyRes := Resolve(pyRepo, config.StackPython, pyCheck, []string{"app/pricing.py"})
+	if pyRes.Skip || !reflect.DeepEqual(pyRes.TargetTests, []string{"tests/test_checkout_flow.py"}) {
+		t.Fatalf("expected reverse-imported python test, got: %+v", pyRes)
+	}
+}

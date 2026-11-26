@@ -11,14 +11,15 @@ import (
 )
 
 type ResolvedCheck struct {
-	Command           string
-	Skip              bool
-	SkipReason        string
-	FullSuite         bool
-	FullSuiteReason   string
-	MatchedFiles      []string
-	TargetPackages    []string
-	TargetTests       []string
+	Command         string
+	WorkingDir      string
+	Skip            bool
+	SkipReason      string
+	FullSuite       bool
+	FullSuiteReason string
+	MatchedFiles    []string
+	TargetPackages  []string
+	TargetTests     []string
 }
 
 var globalCriticalFiles = map[string]bool{
@@ -33,6 +34,10 @@ var stackCriticalFiles = map[config.StackType]map[string]bool{
 		"go.sum":         true,
 		".golangci.yml":  true,
 		".golangci.yaml": true,
+	},
+	config.StackRust: {
+		"Cargo.toml": true,
+		"Cargo.lock": true,
 	},
 	config.StackNode: {
 		"package.json":       true,
@@ -76,18 +81,51 @@ func CheckCriticalTrigger(stack config.StackType, changedFiles []string) (bool, 
 func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, changedFiles []string) ResolvedCheck {
 	if len(changedFiles) == 0 {
 		return ResolvedCheck{
+			WorkingDir: check.WorkingDir,
 			Skip:       true,
 			SkipReason: "no changed files in working tree",
 		}
 	}
 
-	fullSuite, reason := CheckCriticalTrigger(stack, changedFiles)
-	matched := filterByExtensions(changedFiles, check.Extensions)
+	effectiveStack := stack
+	if check.Stack != "" {
+		effectiveStack = check.Stack
+	}
+
+	workDir := repoDir
+	scopedFiles := changedFiles
+	if check.WorkingDir != "" {
+		workDir = filepath.Join(repoDir, filepath.FromSlash(check.WorkingDir))
+		scopedFiles = filterToWorkingDir(changedFiles, check.WorkingDir)
+		// Also check if root quench.yaml changed
+		for _, f := range changedFiles {
+			if globalCriticalFiles[f] {
+				return ResolvedCheck{
+					Command:         expandFullSuiteCommand(workDir, check.Command),
+					WorkingDir:      check.WorkingDir,
+					FullSuite:       true,
+					FullSuiteReason: "critical file modified: " + f,
+					MatchedFiles:    filterByExtensions(scopedFiles, check.Extensions),
+				}
+			}
+		}
+		if len(scopedFiles) == 0 {
+			return ResolvedCheck{
+				WorkingDir: check.WorkingDir,
+				Skip:       true,
+				SkipReason: "no changed files under " + check.WorkingDir,
+			}
+		}
+	}
+
+	fullSuite, reason := CheckCriticalTrigger(effectiveStack, scopedFiles)
+	matched := filterByExtensions(scopedFiles, check.Extensions)
 
 	if fullSuite {
-		cmd := expandFullSuiteCommand(repoDir, check.Command)
+		cmd := expandFullSuiteCommand(workDir, check.Command)
 		return ResolvedCheck{
 			Command:         cmd,
+			WorkingDir:      check.WorkingDir,
 			FullSuite:       true,
 			FullSuiteReason: "critical file modified: " + reason,
 			MatchedFiles:    matched,
@@ -96,6 +134,7 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 
 	if len(matched) == 0 {
 		return ResolvedCheck{
+			WorkingDir: check.WorkingDir,
 			Skip:       true,
 			SkipReason: "no matching changed files for check extensions",
 		}
@@ -106,28 +145,34 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 		cmd := replacePlaceholders(check.Command, quoteArgs(matched), "./...", ".")
 		return ResolvedCheck{
 			Command:      cmd,
+			WorkingDir:   check.WorkingDir,
 			MatchedFiles: matched,
 		}
 
 	case config.ScopeChangedPackages:
-		pkgs := resolveGoPackages(repoDir, matched)
+		pkgs := resolveGoPackages(workDir, matched)
 		if len(pkgs) == 0 {
 			return ResolvedCheck{
+				WorkingDir: check.WorkingDir,
 				Skip:       true,
 				SkipReason: "no valid Go packages in changed paths",
 			}
 		}
+		// Expand 1-hop direct Go importers so breaking exported signatures is caught
+		pkgs = ExpandGoReverseImporters(workDir, pkgs)
 		cmd := replacePlaceholders(check.Command, quoteArgs(matched), strings.Join(quoteArgs(pkgs), " "), strings.Join(quoteArgs(pkgs), " "))
 		return ResolvedCheck{
 			Command:        cmd,
+			WorkingDir:     check.WorkingDir,
 			MatchedFiles:   matched,
 			TargetPackages: pkgs,
 		}
 
 	case config.ScopeMappedTests:
-		tests := resolvePythonTests(repoDir, matched)
+		tests := resolvePythonTests(workDir, matched)
 		if len(tests) == 0 {
 			return ResolvedCheck{
+				WorkingDir: check.WorkingDir,
 				Skip:       true,
 				SkipReason: "no mapped tests found for changed files",
 			}
@@ -135,6 +180,7 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 		cmd := replacePlaceholders(check.Command, quoteArgs(matched), ".", strings.Join(quoteArgs(tests), " "))
 		return ResolvedCheck{
 			Command:      cmd,
+			WorkingDir:   check.WorkingDir,
 			MatchedFiles: matched,
 			TargetTests:  tests,
 		}
@@ -146,9 +192,21 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 		cmd := replacePlaceholders(check.Command, quoteArgs(matched), "./...", filesArg)
 		return ResolvedCheck{
 			Command:      cmd,
+			WorkingDir:   check.WorkingDir,
 			MatchedFiles: matched,
 		}
 	}
+}
+
+func filterToWorkingDir(files []string, workingDir string) []string {
+	prefix := strings.TrimSuffix(filepath.ToSlash(workingDir), "/") + "/"
+	var out []string
+	for _, f := range files {
+		if strings.HasPrefix(f, prefix) {
+			out = append(out, strings.TrimPrefix(f, prefix))
+		}
+	}
+	return out
 }
 
 func filterByExtensions(files []string, exts []string) []string {
@@ -211,7 +269,7 @@ func dirHasGoFiles(dir string) bool {
 	return false
 }
 
-// resolvePythonTests maps changed .py files to their matching test files or test directories.
+// resolvePythonTests maps changed .py files to their matching test files, reverse-importing tests, or test directories.
 func resolvePythonTests(repoDir string, pyFiles []string) []string {
 	seen := make(map[string]struct{})
 	for _, f := range pyFiles {
@@ -223,7 +281,6 @@ func resolvePythonTests(repoDir string, pyFiles []string) []string {
 			continue
 		}
 		if base == "__init__.py" {
-			// Check directory-level tests
 			dir := strings.TrimPrefix(path.Dir(f), "src/")
 			for _, cand := range []string{
 				path.Join("tests", dir),
@@ -260,11 +317,17 @@ func resolvePythonTests(repoDir string, pyFiles []string) []string {
 				matchedAny = true
 			}
 		}
+
+		// Also include any test file under tests/ that directly imports this module
+		for _, rev := range FindPythonReverseTests(repoDir, []string{f}) {
+			seen[rev] = struct{}{}
+			matchedAny = true
+		}
+
 		if matchedAny {
 			continue
 		}
 
-		// Fallback to nearest test directory or same directory tests
 		dirCandidates := []string{
 			cleanSlash(path.Join("tests", strippedDir)),
 			cleanSlash(dir),
@@ -323,7 +386,6 @@ func cleanSlash(p string) string {
 }
 
 func expandFullSuiteCommand(repoDir string, cmd string) string {
-	// Convert diff-related test invocations to full test runs cleanly
 	if strings.Contains(cmd, "vitest related") {
 		cmd = strings.Replace(cmd, "vitest related", "vitest", 1)
 		cmd = strings.ReplaceAll(cmd, "{{files}}", "")

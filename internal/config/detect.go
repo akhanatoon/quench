@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -13,21 +14,148 @@ var (
 	goVersionRe     = regexp.MustCompile(`(?m)^go\s+(1\.\d+)`)
 	nodeMajorRe     = regexp.MustCompile(`(\d{2})`)
 	pythonVersionRe = regexp.MustCompile(`(3\.\d{1,2})`)
+	rustVersionRe   = regexp.MustCompile(`(?m)^rust-version\s*=\s*"(1\.\d+)`)
 )
 
-// DetectConfig builds a zero-config profile by inspecting manifest files in projectDir.
+// WorkspaceInfo describes a detected stack rooted at RelDir ("" for repository root).
+type WorkspaceInfo struct {
+	RelDir string
+	Config *Config
+}
+
+// DetectConfig builds a zero-config profile by inspecting projectDir and common monorepo subdirectories.
 func DetectConfig(projectDir string) (*Config, error) {
+	workspaces := DetectWorkspaces(projectDir)
+	if len(workspaces) == 0 {
+		return nil, fmt.Errorf("could not auto-detect stack in %s (no go.mod, package.json, pyproject.toml, or Cargo.toml found; run 'quench init' or add quench.yaml)", projectDir)
+	}
+	if len(workspaces) == 1 && workspaces[0].RelDir == "" {
+		return workspaces[0].Config, nil
+	}
+
+	// Merge multi-workspace / polyglot checks with explicit working_dir
+	primary := workspaces[0].Config
+	stackSet := make(map[StackType]bool)
+	var mergedChecks []CheckConfig
+	cacheSeen := make(map[string]bool)
+	var mergedCache []string
+
+	for _, ws := range workspaces {
+		stackSet[ws.Config.Stack] = true
+		for _, cp := range ws.Config.Sandbox.CachePaths {
+			if !cacheSeen[cp] {
+				cacheSeen[cp] = true
+				mergedCache = append(mergedCache, cp)
+			}
+		}
+		prefix := ""
+		if ws.RelDir != "" {
+			prefix = strings.ReplaceAll(ws.RelDir, "/", "-") + "-"
+		}
+		for _, ch := range ws.Config.Checks {
+			ch.WorkingDir = ws.RelDir
+			ch.Stack = ws.Config.Stack
+			if prefix != "" {
+				ch.Name = prefix + ch.Name
+			}
+			mergedChecks = append(mergedChecks, ch)
+		}
+	}
+
+	stack := primary.Stack
+	if len(stackSet) > 1 {
+		stack = StackPolyglot
+	}
+
+	syncDeps := true
+	return &Config{
+		Version: 1,
+		Mode:    ModeDocker,
+		Stack:   stack,
+		Sandbox: SandboxConfig{
+			Image:       primary.Sandbox.Image,
+			IdleTimeout: "30m",
+			Network:     "bridge",
+			SyncDeps:    &syncDeps,
+			CachePaths:  mergedCache,
+		},
+		Checks: mergedChecks,
+	}, nil
+}
+
+// DetectWorkspaces scans the repository root and common workspace subdirectories for supported stacks.
+func DetectWorkspaces(projectDir string) []WorkspaceInfo {
+	var found []WorkspaceInfo
+	seenDirs := make(map[string]bool)
+
+	tryDir := func(rel string) {
+		rel = filepath.ToSlash(filepath.Clean(rel))
+		if rel == "." {
+			rel = ""
+		}
+		if seenDirs[rel] {
+			return
+		}
+		full := projectDir
+		if rel != "" {
+			full = filepath.Join(projectDir, filepath.FromSlash(rel))
+		}
+		info, err := os.Stat(full)
+		if err != nil || !info.IsDir() {
+			return
+		}
+		if cfg := detectSingleDir(full); cfg != nil {
+			seenDirs[rel] = true
+			found = append(found, WorkspaceInfo{RelDir: rel, Config: cfg})
+		}
+	}
+
+	// 1. Repository root
+	tryDir("")
+
+	// 2. Common direct sub-projects
+	directNames := []string{
+		"backend", "frontend", "web", "api", "core", "server", "client", "src-tauri", "cli",
+	}
+	for _, name := range directNames {
+		tryDir(name)
+	}
+
+	// 3. Monorepo container folders (1 level inside apps/, services/, packages/)
+	for _, group := range []string{"apps", "services", "packages"} {
+		entries, err := os.ReadDir(filepath.Join(projectDir, group))
+		if err != nil {
+			continue
+		}
+		var subNames []string
+		for _, e := range entries {
+			if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+				subNames = append(subNames, e.Name())
+			}
+		}
+		sort.Strings(subNames)
+		for _, name := range subNames {
+			tryDir(group + "/" + name)
+		}
+	}
+
+	return found
+}
+
+func detectSingleDir(dir string) *Config {
 	switch {
-	case fileExists(filepath.Join(projectDir, "go.mod")):
-		return detectGo(projectDir), nil
-	case fileExists(filepath.Join(projectDir, "package.json")):
-		return detectNode(projectDir), nil
-	case fileExists(filepath.Join(projectDir, "pyproject.toml")) ||
-		fileExists(filepath.Join(projectDir, "requirements.txt")) ||
-		fileExists(filepath.Join(projectDir, "setup.py")):
-		return detectPython(projectDir), nil
+	case fileExists(filepath.Join(dir, "go.mod")):
+		return detectGo(dir)
+	case fileExists(filepath.Join(dir, "Cargo.toml")):
+		return detectRust(dir)
+	case fileExists(filepath.Join(dir, "package.json")):
+		return detectNode(dir)
+	case fileExists(filepath.Join(dir, "pyproject.toml")) ||
+		fileExists(filepath.Join(dir, "requirements.txt")) ||
+		fileExists(filepath.Join(dir, "setup.py")):
+		return detectPython(dir)
 	default:
-		return nil, fmt.Errorf("could not auto-detect stack in %s (no go.mod, package.json, or pyproject.toml found; run 'quench init' or add quench.yaml)", projectDir)
+		return nil
 	}
 }
 
@@ -44,6 +172,7 @@ func detectGo(projectDir string) *Config {
 			Name:       "vet",
 			Command:    "go vet {{packages}}",
 			Scope:      ScopeChangedPackages,
+			Stack:      StackGo,
 			Parser:     "go-vet",
 			Timeout:    "45s",
 			Extensions: []string{".go"},
@@ -52,6 +181,7 @@ func detectGo(projectDir string) *Config {
 			Name:       "test",
 			Command:    "go test -json {{packages}}",
 			Scope:      ScopeChangedPackages,
+			Stack:      StackGo,
 			Parser:     "go-test",
 			Timeout:    "120s",
 			Extensions: []string{".go"},
@@ -62,6 +192,7 @@ func detectGo(projectDir string) *Config {
 			Name:       "lint",
 			Command:    "golangci-lint run {{packages}}",
 			Scope:      ScopeChangedPackages,
+			Stack:      StackGo,
 			Parser:     "golangci-lint",
 			Timeout:    "60s",
 			Extensions: []string{".go"},
@@ -83,6 +214,51 @@ func detectGo(projectDir string) *Config {
 			},
 		},
 		Checks: checks,
+	}
+}
+
+func detectRust(projectDir string) *Config {
+	ver := "1.85"
+	if data, err := os.ReadFile(filepath.Join(projectDir, "Cargo.toml")); err == nil {
+		if m := rustVersionRe.FindSubmatch(data); len(m) == 2 {
+			ver = string(m[1])
+		}
+	}
+	syncDeps := true
+	return &Config{
+		Version: 1,
+		Mode:    ModeDocker,
+		Stack:   StackRust,
+		Sandbox: SandboxConfig{
+			Image:       fmt.Sprintf("rust:%s-slim", ver),
+			IdleTimeout: "30m",
+			Network:     "bridge",
+			SyncDeps:    &syncDeps,
+			CachePaths: []string{
+				"/usr/local/cargo/registry",
+				"/workspace/target",
+			},
+		},
+		Checks: []CheckConfig{
+			{
+				Name:       "check",
+				Command:    "cargo check --message-format=json",
+				Scope:      ScopeProject,
+				Stack:      StackRust,
+				Parser:     "rust-cargo",
+				Timeout:    "120s",
+				Extensions: []string{".rs", ".toml"},
+			},
+			{
+				Name:       "test",
+				Command:    "cargo test --no-fail-fast",
+				Scope:      ScopeProject,
+				Stack:      StackRust,
+				Parser:     "rust-test",
+				Timeout:    "180s",
+				Extensions: []string{".rs", ".toml"},
+			},
+		},
 	}
 }
 
@@ -145,6 +321,7 @@ func detectNode(projectDir string) *Config {
 			Name:       "typecheck",
 			Command:    runner + " tsc --noEmit",
 			Scope:      ScopeProject,
+			Stack:      StackNode,
 			Parser:     "tsc",
 			Timeout:    "45s",
 			Extensions: []string{".ts", ".tsx", ".mts", ".cts"},
@@ -157,6 +334,7 @@ func detectNode(projectDir string) *Config {
 			Name:       "lint",
 			Command:    runner + " eslint {{files}}",
 			Scope:      ScopeChangedFiles,
+			Stack:      StackNode,
 			Parser:     "eslint",
 			Timeout:    "45s",
 			Extensions: jsExts,
@@ -171,6 +349,7 @@ func detectNode(projectDir string) *Config {
 			Name:       "test",
 			Command:    runner + " jest --findRelatedTests {{files}} --passWithNoTests",
 			Scope:      ScopeChangedFiles,
+			Stack:      StackNode,
 			Parser:     "jest",
 			Timeout:    "90s",
 			Extensions: jsExts,
@@ -180,6 +359,7 @@ func detectNode(projectDir string) *Config {
 			Name:       "test",
 			Command:    runner + " vitest related --run {{files}}",
 			Scope:      ScopeChangedFiles,
+			Stack:      StackNode,
 			Parser:     "vitest",
 			Timeout:    "90s",
 			Extensions: jsExts,
@@ -191,6 +371,7 @@ func detectNode(projectDir string) *Config {
 			Name:       "test",
 			Command:    "npm test",
 			Scope:      ScopeProject,
+			Stack:      StackNode,
 			Parser:     "generic",
 			Timeout:    "90s",
 			Extensions: jsExts,
@@ -241,6 +422,7 @@ func detectPython(projectDir string) *Config {
 			Name:       "lint",
 			Command:    "ruff check {{files}}",
 			Scope:      ScopeChangedFiles,
+			Stack:      StackPython,
 			Parser:     "ruff",
 			Timeout:    "30s",
 			Extensions: []string{".py"},
@@ -251,6 +433,7 @@ func detectPython(projectDir string) *Config {
 			Name:       "typecheck",
 			Command:    "mypy {{files}}",
 			Scope:      ScopeChangedFiles,
+			Stack:      StackPython,
 			Parser:     "mypy",
 			Timeout:    "60s",
 			Extensions: []string{".py"},
@@ -260,6 +443,7 @@ func detectPython(projectDir string) *Config {
 		Name:       "test",
 		Command:    "pytest -q {{tests}}",
 		Scope:      ScopeMappedTests,
+		Stack:      StackPython,
 		Parser:     "pytest",
 		Timeout:    "90s",
 		Extensions: []string{".py"},

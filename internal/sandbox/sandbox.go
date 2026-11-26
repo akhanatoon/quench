@@ -35,7 +35,7 @@ type StatusInfo struct {
 type Sandbox interface {
 	ModeName() string
 	EnsureWarm(ctx context.Context) error
-	Exec(ctx context.Context, command string, timeout time.Duration) (ExecResult, error)
+	Exec(ctx context.Context, workingDir string, command string, timeout time.Duration) (ExecResult, error)
 	Status(ctx context.Context) (StatusInfo, error)
 	Reset(ctx context.Context, purgeCache bool) error
 	Teardown(ctx context.Context) error

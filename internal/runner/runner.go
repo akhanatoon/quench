@@ -2,11 +2,14 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/akhanatoon/quench/internal/config"
@@ -68,12 +71,15 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 			results[i] = CheckResult{
 				Name:       ch.Name,
 				Status:     StatusSkipped,
+				WorkingDir: ch.WorkingDir,
 				SkipReason: res.SkipReason,
 			}
 		} else {
 			anyActive = true
 		}
 	}
+
+	var totalRawBytes atomic.Int64
 
 	if anyActive {
 		if err := sb.EnsureWarm(ctx); err != nil {
@@ -92,13 +98,15 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 			go func(plan plannedCheck) {
 				defer wg.Done()
 				cStart := time.Now()
-				execRes, execErr := sb.Exec(runCtx, plan.resolved.Command, plan.cfg.ParsedTimeout())
+				execRes, execErr := sb.Exec(runCtx, plan.resolved.WorkingDir, plan.resolved.Command, plan.cfg.ParsedTimeout())
 				dur := time.Since(cStart).Milliseconds()
+				totalRawBytes.Add(int64(len(execRes.Combined)))
 
 				if execErr != nil {
 					results[plan.index] = CheckResult{
 						Name:       plan.cfg.Name,
 						Status:     StatusFailed,
+						WorkingDir: plan.resolved.WorkingDir,
 						DurationMs: dur,
 						Command:    plan.resolved.Command,
 						Failures: []Failure{
@@ -118,6 +126,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 					results[plan.index] = CheckResult{
 						Name:       plan.cfg.Name,
 						Status:     StatusFailed,
+						WorkingDir: plan.resolved.WorkingDir,
 						DurationMs: dur,
 						Command:    plan.resolved.Command,
 						Failures: []Failure{
@@ -137,12 +146,17 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 					results[plan.index] = CheckResult{
 						Name:       plan.cfg.Name,
 						Status:     StatusPassed,
+						WorkingDir: plan.resolved.WorkingDir,
 						DurationMs: dur,
 					}
 					return
 				}
 
-				failures, truncated := parser.Parse(plan.cfg.Parser, plan.resolved.Command, absDir, execRes.Combined)
+				parseRoot := absDir
+				if plan.resolved.WorkingDir != "" {
+					parseRoot = filepath.Join(absDir, filepath.FromSlash(plan.resolved.WorkingDir))
+				}
+				failures, truncated := parser.Parse(plan.cfg.Parser, plan.resolved.Command, parseRoot, execRes.Combined)
 				if len(failures) == 0 {
 					failures = []Failure{
 						{
@@ -154,6 +168,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 				results[plan.index] = CheckResult{
 					Name:           plan.cfg.Name,
 					Status:         StatusFailed,
+					WorkingDir:     plan.resolved.WorkingDir,
 					DurationMs:     dur,
 					Command:        plan.resolved.Command,
 					TruncatedCount: truncated,
@@ -185,7 +200,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 		overallStatus = StatusFailed
 	}
 
-	return &RunReport{
+	report := &RunReport{
 		Status:             overallStatus,
 		Mode:               sb.ModeName(),
 		ProjectDir:         filepath.ToSlash(absDir),
@@ -195,7 +210,24 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 		ChangedFiles:       changed,
 		Summary:            summary,
 		Checks:             results,
-	}, nil
+	}
+
+	rawBytes := int(totalRawBytes.Load())
+	if rawBytes > 0 {
+		encoded, _ := json.Marshal(report)
+		repBytes := len(encoded)
+		pct := 0.0
+		if rawBytes > repBytes {
+			pct = math.Round((1.0-float64(repBytes)/float64(rawBytes))*1000) / 10
+		}
+		report.OutputStats = &OutputStats{
+			RawBytes:     rawBytes,
+			ReportBytes:  repBytes,
+			ReductionPct: pct,
+		}
+	}
+
+	return report, nil
 }
 
 func filterChecks(all []config.CheckConfig, only []string) []config.CheckConfig {

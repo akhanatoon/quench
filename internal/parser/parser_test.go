@@ -87,3 +87,25 @@ FAILED tests/test_service.py::test_divide - AssertionError: assert 5 == 99
 		t.Fatalf("unexpected pytest parse: %+v", f3)
 	}
 }
+
+func TestParseRustCargoJSONAndRustTest(t *testing.T) {
+	cargoJSON := `{"reason":"compiler-message","message":{"message":"mismatched types","code":{"code":"E0308"},"level":"error","spans":[{"file_name":"src/lib.rs","line_start":14,"column_start":12,"is_primary":true}]}}`
+	f1, _ := Parse("rust-cargo", "cargo check --message-format=json", "", cargoJSON)
+	if len(f1) != 1 || f1[0].File != "src/lib.rs" || f1[0].Line != 14 || f1[0].Symbol != "E0308" {
+		t.Fatalf("unexpected cargo JSON parse: %+v", f1)
+	}
+
+	rustTestOut := `running 1 test
+test math::tests::test_sum ... FAILED
+
+failures:
+
+---- math::tests::test_sum stdout ----
+thread 'math::tests::test_sum' panicked at src/math.rs:22:9:
+assertion left == right failed: left: 4, right: 5
+`
+	f2, _ := Parse("rust-test", "cargo test --no-fail-fast", "", rustTestOut)
+	if len(f2) != 1 || f2[0].File != "src/math.rs" || f2[0].Line != 22 || f2[0].Symbol != "math::tests::test_sum" {
+		t.Fatalf("unexpected rust test parse: %+v", f2)
+	}
+}

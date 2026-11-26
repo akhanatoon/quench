@@ -13,6 +13,7 @@ const (
 type CheckResult struct {
 	Name           string    `json:"name"`
 	Status         string    `json:"status"`
+	WorkingDir     string    `json:"working_dir,omitempty"`
 	DurationMs     int64     `json:"duration_ms"`
 	Command        string    `json:"command,omitempty"`
 	SkipReason     string    `json:"skip_reason,omitempty"`
@@ -27,6 +28,12 @@ type Summary struct {
 	Skipped     int `json:"skipped"`
 }
 
+type OutputStats struct {
+	RawBytes     int     `json:"raw_bytes"`
+	ReportBytes  int     `json:"report_bytes"`
+	ReductionPct float64 `json:"reduction_pct"`
+}
+
 type RunReport struct {
 	Status             string        `json:"status"`
 	Mode               string        `json:"mode"`
@@ -36,5 +43,6 @@ type RunReport struct {
 	ScopeReason        string        `json:"scope_reason,omitempty"`
 	ChangedFiles       []string      `json:"changed_files"`
 	Summary            Summary       `json:"summary"`
+	OutputStats        *OutputStats  `json:"output_stats,omitempty"`
 	Checks             []CheckResult `json:"checks"`
 }

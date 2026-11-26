@@ -44,6 +44,10 @@ func Parse(parserName string, command string, projectDir string, output string) 
 		raw = parseMypy(cleanOut)
 	case "pytest":
 		raw = parsePytest(cleanOut)
+	case "rust-cargo", "cargo-check", "clippy":
+		raw = parseRustCargo(cleanOut)
+	case "rust-test", "cargo-test":
+		raw = parseRustTest(cleanOut)
 	default:
 		raw = parseGeneric(cleanOut)
 	}
@@ -82,6 +86,10 @@ func resolveParserKind(explicit string, command string) string {
 		return "mypy"
 	case strings.Contains(cmd, "pytest"):
 		return "pytest"
+	case strings.Contains(cmd, "cargo test"):
+		return "rust-test"
+	case strings.Contains(cmd, "cargo check") || strings.Contains(cmd, "cargo clippy"):
+		return "rust-cargo"
 	default:
 		return "generic"
 	}

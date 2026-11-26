@@ -27,10 +27,12 @@ const (
 type StackType string
 
 const (
-	StackGo      StackType = "go"
-	StackNode    StackType = "node"
-	StackPython  StackType = "python"
-	StackGeneric StackType = "generic"
+	StackGo       StackType = "go"
+	StackNode     StackType = "node"
+	StackPython   StackType = "python"
+	StackRust     StackType = "rust"
+	StackPolyglot StackType = "polyglot"
+	StackGeneric  StackType = "generic"
 )
 
 type Config struct {
@@ -69,12 +71,14 @@ func (s SandboxConfig) ParsedIdleTimeout() time.Duration {
 }
 
 type CheckConfig struct {
-	Name       string   `yaml:"name" json:"name"`
-	Command    string   `yaml:"command" json:"command"`
-	Scope      string   `yaml:"scope" json:"scope"`
-	Parser     string   `yaml:"parser,omitempty" json:"parser,omitempty"`
-	Timeout    string   `yaml:"timeout,omitempty" json:"timeout,omitempty"`
-	Extensions []string `yaml:"extensions,omitempty" json:"extensions,omitempty"`
+	Name       string    `yaml:"name" json:"name"`
+	Command    string    `yaml:"command" json:"command"`
+	Scope      string    `yaml:"scope" json:"scope"`
+	Stack      StackType `yaml:"stack,omitempty" json:"stack,omitempty"`
+	WorkingDir string    `yaml:"working_dir,omitempty" json:"working_dir,omitempty"`
+	Parser     string    `yaml:"parser,omitempty" json:"parser,omitempty"`
+	Timeout    string    `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Extensions []string  `yaml:"extensions,omitempty" json:"extensions,omitempty"`
 }
 
 func (c CheckConfig) ParsedTimeout() time.Duration {
@@ -88,7 +92,7 @@ func (c CheckConfig) ParsedTimeout() time.Duration {
 	return d
 }
 
-// Load reads quench.yaml (or .quench.yaml) if present; otherwise zero-config detects the project stack.
+// Load reads quench.yaml (or .quench.yaml) if present; otherwise zero-config detects the project stack(s).
 // Returns (config, loadedFromFile, error).
 func Load(projectDir string) (*Config, bool, error) {
 	absDir, err := filepath.Abs(projectDir)
@@ -160,6 +164,12 @@ func applyDefaults(cfg *Config, projectDir string) {
 		}
 		if cfg.Checks[i].Timeout == "" {
 			cfg.Checks[i].Timeout = "60s"
+		}
+		if cfg.Checks[i].WorkingDir != "" {
+			cfg.Checks[i].WorkingDir = filepath.ToSlash(filepath.Clean(cfg.Checks[i].WorkingDir))
+			if cfg.Checks[i].WorkingDir == "." {
+				cfg.Checks[i].WorkingDir = ""
+			}
 		}
 	}
 }

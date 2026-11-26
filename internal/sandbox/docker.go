@@ -237,8 +237,12 @@ func (d *DockerSandbox) syncDependenciesIfNeeded(ctx context.Context) error {
 	return nil
 }
 
-func (d *DockerSandbox) Exec(ctx context.Context, command string, timeout time.Duration) (ExecResult, error) {
+func (d *DockerSandbox) Exec(ctx context.Context, workingDir string, command string, timeout time.Duration) (ExecResult, error) {
 	d.touchLastUsed(ctx)
+	if workingDir != "" {
+		cleanSub := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(workingDir)), "/")
+		command = fmt.Sprintf("cd /workspace/%s && %s", cleanSub, command)
+	}
 	return d.execRaw(ctx, command, timeout)
 }
 

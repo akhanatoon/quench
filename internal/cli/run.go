@@ -85,8 +85,12 @@ func newRunCmd() *cobra.Command {
 
 func printHumanReport(cmd *cobra.Command, r *runner.RunReport) {
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "quench [%s] — %s in %dms (%d changed files)\n",
-		r.Mode, strings.ToUpper(r.Status), r.DurationMs, len(r.ChangedFiles))
+	extra := ""
+	if r.OutputStats != nil && r.OutputStats.ReductionPct > 0 {
+		extra = fmt.Sprintf(" | %.1f%% log reduction", r.OutputStats.ReductionPct)
+	}
+	fmt.Fprintf(out, "quench [%s] — %s in %dms (%d changed files%s)\n",
+		r.Mode, strings.ToUpper(r.Status), r.DurationMs, len(r.ChangedFiles), extra)
 	if r.FullSuiteTriggered && r.ScopeReason != "" {
 		fmt.Fprintf(out, "  note: full suite triggered (%s)\n", r.ScopeReason)
 	}

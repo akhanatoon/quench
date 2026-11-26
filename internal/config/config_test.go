@@ -121,3 +121,36 @@ checks:
 		t.Fatalf("expected validation error for unknown_scope")
 	}
 }
+
+func TestDetectPolyglotMonorepoAndRust(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "apps", "web"), 0o755)
+	_ = os.MkdirAll(filepath.Join(dir, "services", "engine"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "apps", "web", "package.json"), []byte(`{"name":"web","devDependencies":{"typescript":"^5.0.0"}}`), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "apps", "web", "tsconfig.json"), []byte(`{}`), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "services", "engine", "Cargo.toml"), []byte("[package]\nname = \"engine\"\nrust-version = \"1.84\"\n"), 0o644)
+
+	cfg, fromFile, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load polyglot failed: %v", err)
+	}
+	if fromFile {
+		t.Fatalf("expected zero-config detection")
+	}
+	if cfg.Stack != StackPolyglot {
+		t.Fatalf("expected stack polyglot, got %s", cfg.Stack)
+	}
+
+	var foundWeb, foundRust bool
+	for _, ch := range cfg.Checks {
+		if ch.WorkingDir == "apps/web" && ch.Name == "apps-web-typecheck" {
+			foundWeb = true
+		}
+		if ch.WorkingDir == "services/engine" && ch.Name == "services-engine-check" && ch.Stack == StackRust {
+			foundRust = true
+		}
+	}
+	if !foundWeb || !foundRust {
+		t.Fatalf("expected polyglot checks for apps/web and services/engine, got: %+v", cfg.Checks)
+	}
+}

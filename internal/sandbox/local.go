@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -31,7 +32,7 @@ func (l *LocalSandbox) EnsureWarm(ctx context.Context) error {
 	return nil
 }
 
-func (l *LocalSandbox) Exec(ctx context.Context, command string, timeout time.Duration) (ExecResult, error) {
+func (l *LocalSandbox) Exec(ctx context.Context, workingDir string, command string, timeout time.Duration) (ExecResult, error) {
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
@@ -45,6 +46,9 @@ func (l *LocalSandbox) Exec(ctx context.Context, command string, timeout time.Du
 		cmd = exec.CommandContext(tctx, "sh", "-c", command)
 	}
 	cmd.Dir = l.projectDir
+	if workingDir != "" {
+		cmd.Dir = filepath.Join(l.projectDir, filepath.FromSlash(workingDir))
+	}
 	cmd.WaitDelay = 2 * time.Second
 
 	var stdout, stderr, combined bytes.Buffer
