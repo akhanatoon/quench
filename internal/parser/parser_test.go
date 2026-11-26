@@ -109,3 +109,21 @@ assertion left == right failed: left: 4, right: 5
 		t.Fatalf("unexpected rust test parse: %+v", f2)
 	}
 }
+
+func TestParseGoVetExePrefixAndGo124FailedBuildJSON(t *testing.T) {
+	vetWin := "vet.exe: internal\\usage\\usage_test.go:12:12: undefined: EvaluateQuota\n"
+	f1, _ := Parse("go-vet", "go vet ./...", "", vetWin)
+	if len(f1) != 1 || f1[0].File != "internal/usage/usage_test.go" || f1[0].Line != 12 || f1[0].Column != 12 {
+		t.Fatalf("expected structured go-vet failure from vet.exe prefix, got: %+v", f1)
+	}
+
+	go124BuildFail := strings.Join([]string{
+		`{"Action":"build-output","ImportPath":"github.com/veriyum/veripod/services/metering/internal/usage","Output":"internal/usage/usage_test.go:12:12: undefined: EvaluateQuota\n"}`,
+		`{"Action":"build-fail","ImportPath":"github.com/veriyum/veripod/services/metering/internal/usage"}`,
+		`{"Action":"fail","Package":"github.com/veriyum/veripod/services/metering/internal/usage","FailedBuild":"github.com/veriyum/veripod/services/metering/internal/usage"}`,
+	}, "\n")
+	f2, _ := Parse("go-test", "go test -json ./...", "", go124BuildFail)
+	if len(f2) != 1 || f2[0].File != "internal/usage/usage_test.go" || f2[0].Line != 12 || !strings.Contains(f2[0].Message, "undefined: EvaluateQuota") {
+		t.Fatalf("expected structured Go 1.24 FailedBuild diagnostic, got: %+v", f2)
+	}
+}

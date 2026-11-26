@@ -11,16 +11,19 @@ import (
 )
 
 var (
-	goTestLocRe = regexp.MustCompile(`^\s*([^\s:]+\.go):(\d+):\s*(.+)$`)
-	goDiagRe    = regexp.MustCompile(`^([^\s:]+\.go):(\d+)(?::(\d+))?:\s*(.+)$`)
-	goModuleRe  = regexp.MustCompile(`(?m)^module\s+(\S+)`)
+	goTestLocRe   = regexp.MustCompile(`^\s*([^\s:]+\.go):(\d+):\s*(.+)$`)
+	goDiagRe      = regexp.MustCompile(`^([^\s:]+\.go):(\d+)(?::(\d+))?:\s*(.+)$`)
+	goVetPrefixRe = regexp.MustCompile(`^(?:go\s+)?vet(?:\.exe)?:\s*`)
+	goModuleRe    = regexp.MustCompile(`(?m)^module\s+(\S+)`)
 )
 
 type goTestEvent struct {
-	Action  string `json:"Action"`
-	Package string `json:"Package"`
-	Test    string `json:"Test"`
-	Output  string `json:"Output"`
+	Action      string `json:"Action"`
+	Package     string `json:"Package"`
+	ImportPath  string `json:"ImportPath"`
+	FailedBuild string `json:"FailedBuild"`
+	Test        string `json:"Test"`
+	Output      string `json:"Output"`
 }
 
 func readModulePath(projectDir string) string {
@@ -66,15 +69,36 @@ func parseGoTest(output string, projectDir string) []Failure {
 				k := testKey{pkg: ev.Package, test: ev.Test}
 				buffers[k] = append(buffers[k], ev.Output)
 			} else {
-				pkgBuffers[ev.Package] = append(pkgBuffers[ev.Package], ev.Output)
+				key := ev.Package
+				if key == "" {
+					key = ev.ImportPath
+				}
+				pkgBuffers[key] = append(pkgBuffers[key], ev.Output)
 			}
 		case "fail", "build-fail":
 			if ev.Test != "" {
 				k := testKey{pkg: ev.Package, test: ev.Test}
 				failures = append(failures, extractGoTestFailure(ev.Package, modPath, ev.Test, buffers[k]))
-			} else if ev.Action == "build-fail" {
-				joined := strings.Join(pkgBuffers[ev.Package], "")
-				failures = append(failures, parseGoVetOrLint(joined)...)
+			} else if ev.Action == "build-fail" || ev.FailedBuild != "" {
+				key := ev.ImportPath
+				if key == "" {
+					key = ev.FailedBuild
+				}
+				if key == "" {
+					key = ev.Package
+				}
+				joined := strings.Join(pkgBuffers[key], "")
+				diags := parseGoVetOrLint(joined)
+				if len(diags) > 0 {
+					failures = append(failures, diags...)
+				} else if msg := firstMeaningfulGoLine(pkgBuffers[key]); msg != "" {
+					failures = append(failures, Failure{
+						Symbol:         shortGoPkgScope(key, modPath),
+						Message:        msg,
+						SuggestedScope: shortGoPkgScope(key, modPath),
+						RawExcerpt:     msg,
+					})
+				}
 			}
 		}
 	}
@@ -184,10 +208,12 @@ func parseGoVetOrLint(output string) []Failure {
 	var failures []Failure
 	for _, raw := range strings.Split(output, "\n") {
 		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "vet:") {
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if m := goDiagRe.FindStringSubmatch(line); len(m) == 5 {
+		// Strip Windows/Linux "vet.exe: " or "vet: " prefix so file:line:col matches cleanly
+		cleaned := goVetPrefixRe.ReplaceAllString(line, "")
+		if m := goDiagRe.FindStringSubmatch(cleaned); len(m) == 5 {
 			ln, _ := strconv.Atoi(m[2])
 			col, _ := strconv.Atoi(m[3])
 			failures = append(failures, Failure{

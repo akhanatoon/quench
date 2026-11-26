@@ -252,6 +252,15 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 						parseRoot = filepath.Join(absDir, filepath.FromSlash(plan.resolved.WorkingDir))
 					}
 					failures, truncated := parser.Parse(plan.cfg.Parser, plan.resolved.Command, parseRoot, execRes.Combined)
+					// Prefix Failure.File with WorkingDir so agents always get repo-root-relative paths
+					if plan.resolved.WorkingDir != "" {
+						prefix := strings.TrimSuffix(plan.resolved.WorkingDir, "/") + "/"
+						for i := range failures {
+							if failures[i].File != "" && !strings.HasPrefix(failures[i].File, prefix) {
+								failures[i].File = prefix + failures[i].File
+							}
+						}
+					}
 					filteredOut := 0
 					if opts.ChangedLinesOnly && isLinterCheck(plan.cfg) && len(hunkRanges) > 0 && len(failures) > 0 {
 						var kept []Failure

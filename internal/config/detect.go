@@ -303,7 +303,7 @@ func detectNode(projectDir string) *Config {
 		}
 	}
 
-	runner := "npx"
+	runner := "npx --no-install"
 	switch {
 	case fileExists(filepath.Join(projectDir, "pnpm-lock.yaml")):
 		runner = "pnpm exec"
@@ -324,7 +324,7 @@ func detectNode(projectDir string) *Config {
 			Scope:      ScopeProject,
 			Stack:      StackNode,
 			Parser:     "tsc",
-			Timeout:    "45s",
+			Timeout:    "90s",
 			Extensions: []string{".ts", ".tsx", ".mts", ".cts"},
 		})
 	}
