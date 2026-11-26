@@ -1,9 +1,20 @@
-# `quench` 🔥💧
+<div align="center">
 
-**Warm-sandbox, diff-aware verification for AI coding agents — in ~1 second, not CI minutes.**
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg" />
+  <img alt="quench" src="assets/logo-dark.svg" width="380" />
+</picture>
 
-[![CI](https://github.com/akhanatoon/quench/actions/workflows/ci.yml/badge.svg)](https://github.com/akhanatoon/quench/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<p><strong>Warm-sandbox, diff-aware verification for AI coding agents — in ~1 second, not CI minutes.</strong></p>
+
+<p>
+  <a href="https://github.com/akhanatoon/quench/actions/workflows/ci.yml"><img src="https://github.com/akhanatoon/quench/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/akhanatoon/quench/releases"><img src="https://img.shields.io/github/v/release/akhanatoon/quench?color=22b8cf" alt="Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+</p>
+
+</div>
 
 `quench` is a single-binary Go CLI and native `stdio` MCP server that verifies only what changed in `git diff` (plus direct reverse-importers) inside a persistent warm Docker container or locally, returning a compressed, token-lean JSON report coding agents can fix in a single turn.
 

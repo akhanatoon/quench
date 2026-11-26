@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 96" width="380" height="96" fill="none">
+  <!-- Nested amber-orange geometric ember diamond -->
+  <polygon points="44,10 64,38 44,62 24,38" fill="#F59E0B"/>
+  <polygon points="44,29 54,44 44,62 34,44" fill="#EA580C"/>
+  <!-- Crisp cyan V-checkmark quench cradle -->
+  <path d="M12 46L44 82L82 36L82 48L44 92L4 46H12Z" fill="#0891B2"/>
+
+  <!-- Wordmark -->
+  <text x="104" y="57" fill="#1F2328" font-family="'Segoe UI', Inter, -apple-system, BlinkMacSystemFont, sans-serif" font-size="48" font-weight="700" letter-spacing="-1.5">quench</text>
+  <text x="106" y="79" fill="#57606A" font-family="ui-monospace, 'Cascadia Mono', Consolas, monospace" font-size="12" letter-spacing="0.4">warm-sandbox diff verification for coding agents</text>
+</svg>
