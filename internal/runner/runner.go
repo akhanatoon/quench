@@ -326,6 +326,23 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 							},
 						}
 					}
+					if strings.Contains(plan.resolved.Command, "npx --no-install") {
+						lowerOut := strings.ToLower(execRes.Combined)
+						if strings.Contains(lowerOut, "could not determine executable") ||
+							strings.Contains(lowerOut, "command not found") ||
+							strings.Contains(lowerOut, "is not recognized") ||
+							strings.Contains(lowerOut, "enoent") ||
+							execRes.ExitCode == 127 {
+							scopeDir := plan.resolved.WorkingDir
+							if scopeDir == "" {
+								scopeDir = "."
+							}
+							hint := fmt.Sprintf(" (hint: local Node dependencies may not be installed; run 'npm ci' or 'npm install' in %s first)", scopeDir)
+							if !strings.Contains(failures[0].Message, "npm ci") {
+								failures[0].Message += hint
+							}
+						}
+					}
 					results[plan.index] = CheckResult{
 						Name:           plan.cfg.Name,
 						Status:         StatusFailed,

@@ -5,6 +5,19 @@ All notable changes to `quench` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-11-26
+
+### Added
+- **Auto-fix mode (`quench run --fix` / MCP `fix: true`)**: Runs check `fix_command` (`gofmt -w`, `golangci-lint --fix`, `eslint --fix`, `ruff check --fix`) before verification and bypasses memo cache.
+- **Compact report mode (`quench run --compact`, enabled by default in MCP `verify_changes`)**: Omits skipped checks from `checks` while preserving `summary.skipped`, cutting monorepo JSON payloads by 60–80%.
+- **TypeScript `tsconfig.json` / `jsconfig.json` path alias resolution**: Parses JSONC comments and `baseUrl`/`paths` (`@/*`, `@components/*`) in the transitive JS/TS reverse-importer graph.
+- **`sandbox.copy_exclude` & `quench warm status --all`**: Custom glob exclusions (in addition to default `.env*`, `*.key`, `*.pem` exclusions) for remote Docker `copy` mode, plus a daemon-wide managed warm container table.
+- **`passed_with_filtered` status**: Distinct status (CLI `[PASS*]`, GitHub Actions `::warning`) when `--changed-lines-only` suppresses legacy out-of-diff linter diagnostics.
+
+### Fixed
+- **Go proxy retraction (`retract [v0.2.0, v0.5.3]`)**: Retracted pre-hardening tags from `proxy.golang.org` so `go install github.com/akhanatoon/quench/cmd/quench@latest` resolves cleanly to `v0.1.1+`.
+- **Real Veripod monorepo field fixes**: Strip Windows `vet.exe:` prefix, parse Go 1.24+ `ImportPath`/`FailedBuild` JSON events, prefix `Failure.File` with `working_dir`, use `npx --no-install` with actionable `npm ci` hint, and hash real project toolchain versions / Docker image digests in memo cache keys.
+
 ## [0.1.0] - 2026-11-26
 
 Initial public alpha release of `quench` — a single-binary Go CLI and native `stdio` MCP server for warm-sandbox, diff-aware code verification.

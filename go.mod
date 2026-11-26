@@ -1,6 +1,10 @@
 module github.com/akhanatoon/quench
 
-go 1.26.4
+go 1.23.0
+
+retract (
+	[v0.2.0, v0.5.3] // Premature pre-hardening tags; superseded by v0.1.1+.
+)
 
 require (
 	github.com/spf13/cobra v1.8.1
