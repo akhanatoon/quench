@@ -239,6 +239,7 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 				sb = sandbox.NewLocal(projDir, cfg.Stack)
 			} else {
 				sb = sandbox.NewDockerPool(projDir, cfg)
+				sandbox.BestEffortGC()
 			}
 		}
 

@@ -48,6 +48,7 @@ func newRunCmd() *cobra.Command {
 				sb = sandbox.NewLocal(projectDir, cfg.Stack)
 			} else {
 				sb = sandbox.NewDockerPool(projectDir, cfg)
+				sandbox.BestEffortGC()
 			}
 
 			report, err := runner.Run(context.Background(), cfg, sb, runner.Options{

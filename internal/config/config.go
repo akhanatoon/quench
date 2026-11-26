@@ -3,9 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -41,6 +44,9 @@ type Config struct {
 	Stack   StackType     `yaml:"stack,omitempty" json:"stack"`
 	Sandbox SandboxConfig `yaml:"sandbox" json:"sandbox"`
 	Checks  []CheckConfig `yaml:"checks" json:"checks"`
+
+	// MaxParallel caps concurrently executing checks within a wave (0 = unlimited).
+	MaxParallel int `yaml:"max_parallel,omitempty" json:"max_parallel,omitempty"`
 }
 
 type SandboxConfig struct {
@@ -50,7 +56,11 @@ type SandboxConfig struct {
 	SyncDeps     *bool    `yaml:"sync_deps,omitempty" json:"sync_deps,omitempty"`
 	SetupCommand string   `yaml:"setup_command,omitempty" json:"setup_command,omitempty"`
 	CachePaths   []string `yaml:"cache_paths,omitempty" json:"cache_paths,omitempty"`
+	Memory       string   `yaml:"memory,omitempty" json:"memory,omitempty"`
+	CPUs         string   `yaml:"cpus,omitempty" json:"cpus,omitempty"`
 }
+
+var memoryPattern = regexp.MustCompile(`(?i)^[0-9]+(b|k|m|g)?$`)
 
 func (s SandboxConfig) ShouldSyncDeps() bool {
 	if s.SyncDeps == nil {
@@ -187,6 +197,18 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Sandbox.Network != "" && cfg.Sandbox.Network != "bridge" && cfg.Sandbox.Network != "none" && cfg.Sandbox.Network != "host" {
 		return fmt.Errorf("unsupported sandbox.network %q (expected bridge, none, or host)", cfg.Sandbox.Network)
+	}
+	if cfg.Sandbox.Memory != "" && !memoryPattern.MatchString(cfg.Sandbox.Memory) {
+		return fmt.Errorf("invalid sandbox.memory %q (expected e.g. 512m or 1g)", cfg.Sandbox.Memory)
+	}
+	if cfg.Sandbox.CPUs != "" {
+		v, err := strconv.ParseFloat(cfg.Sandbox.CPUs, 64)
+		if err != nil || v <= 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("invalid sandbox.cpus %q (expected a positive number)", cfg.Sandbox.CPUs)
+		}
+	}
+	if cfg.MaxParallel < 0 {
+		return fmt.Errorf("invalid max_parallel %d (must be >= 0)", cfg.MaxParallel)
 	}
 	if len(cfg.Checks) == 0 {
 		return errors.New("at least one check must be defined")

@@ -138,6 +138,10 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 			}
 
 			var wg sync.WaitGroup
+			var sem chan struct{}
+			if cfg.MaxParallel > 0 {
+				sem = make(chan struct{}, cfg.MaxParallel)
+			}
 			for _, idx := range wave {
 				p := plans[idx]
 				if p.resolved.Skip {
@@ -157,6 +161,10 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 				wg.Add(1)
 				go func(plan plannedCheck) {
 					defer wg.Done()
+					if sem != nil {
+						sem <- struct{}{}
+						defer func() { <-sem }()
+					}
 					cStart := time.Now()
 					var (
 						execRes sandbox.ExecResult

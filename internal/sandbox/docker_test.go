@@ -149,3 +149,21 @@ func TestDefaultSetupCommandPython(t *testing.T) {
 		}
 	})
 }
+
+func TestResourceArgs(t *testing.T) {
+	if got := resourceArgs(config.SandboxConfig{}); len(got) != 0 {
+		t.Fatalf("expected no flags, got %v", got)
+	}
+	got := strings.Join(resourceArgs(config.SandboxConfig{Memory: "1g"}), " ")
+	if got != "--memory 1g --memory-swap 1g" {
+		t.Fatalf("memory only: %q", got)
+	}
+	got = strings.Join(resourceArgs(config.SandboxConfig{CPUs: "2"}), " ")
+	if got != "--cpus 2" {
+		t.Fatalf("cpus only: %q", got)
+	}
+	got = strings.Join(resourceArgs(config.SandboxConfig{Memory: "512m", CPUs: "0.5"}), " ")
+	if got != "--memory 512m --memory-swap 512m --cpus 0.5" {
+		t.Fatalf("both: %q", got)
+	}
+}

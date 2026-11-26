@@ -197,6 +197,9 @@ sandbox:
   idle_timeout: 30m
   network: bridge # bridge | none
   sync_deps: true
+  memory: 1g      # optional hard cap for the warm container
+  cpus: "2"       # optional CPU cap
+max_parallel: 2   # optional: max concurrent checks per wave (0 = unlimited)
   cache_paths:
     - /root/.npm
     - /workspace/node_modules

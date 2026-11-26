@@ -220,6 +220,7 @@ func (d *DockerSandbox) startNewContainer(ctx context.Context) error {
 		args = append(args, "-v", fmt.Sprintf("%s:%s", volName, cp))
 	}
 
+	args = append(args, resourceArgs(d.cfg.Sandbox)...)
 	args = append(args, image, "sleep", "infinity")
 	if _, err := dockerOutput(ctx, 5*time.Minute, args...); err != nil {
 		return fmt.Errorf("launch warm container %s (%s): %w", d.containerName, image, err)
@@ -579,4 +580,29 @@ func dockerOutput(ctx context.Context, timeout time.Duration, args ...string) (s
 		return "", fmt.Errorf("%s", msg)
 	}
 	return stdout.String(), nil
+}
+
+// resourceArgs returns the docker run flags that enforce configured memory/CPU limits.
+// It is pure so it can be unit-tested without Docker.
+func resourceArgs(s config.SandboxConfig) []string {
+	var out []string
+	if s.Memory != "" {
+		// memory-swap equal to memory disables swap so the limit cannot be bypassed.
+		out = append(out, "--memory", s.Memory, "--memory-swap", s.Memory)
+	}
+	if s.CPUs != "" {
+		out = append(out, "--cpus", s.CPUs)
+	}
+	return out
+}
+
+// BestEffortGC launches GarbageCollect(ctx, false) in a background goroutine with a
+// 3s timeout. All errors are ignored; it never blocks or fails the caller.
+func BestEffortGC() {
+	go func() {
+		defer func() { _ = recover() }()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, _ = GarbageCollect(ctx, false)
+	}()
 }

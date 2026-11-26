@@ -18,7 +18,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const watchPollInterval = 250 * time.Millisecond
+const (
+	watchDefaultPollInterval = 500 * time.Millisecond
+	watchMinPollInterval     = 100 * time.Millisecond
+)
 
 var watchIgnoredDirs = map[string]struct{}{
 	".git":         {},
@@ -37,6 +40,7 @@ func newWatchCmd() *cobra.Command {
 		onlyChecks []string
 		failFast   bool
 		debounce   time.Duration
+		pollEvery  time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -55,6 +59,10 @@ func newWatchCmd() *cobra.Command {
 
 			if debounce < 0 {
 				debounce = 0
+			}
+
+			if pollEvery < watchMinPollInterval {
+				pollEvery = watchMinPollInterval
 			}
 
 			mode := cfg.Mode
@@ -105,7 +113,7 @@ func newWatchCmd() *cobra.Command {
 				return nil
 			}
 
-			ticker := time.NewTicker(watchPollInterval)
+			ticker := time.NewTicker(pollEvery)
 			defer ticker.Stop()
 
 			var (
@@ -156,6 +164,7 @@ func newWatchCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&onlyChecks, "only", nil, "Comma-separated check names to run (e.g. lint,test)")
 	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Cancel remaining checks on first failure")
 	cmd.Flags().DurationVar(&debounce, "debounce", 350*time.Millisecond, "Debounce interval before re-running after file changes")
+	cmd.Flags().DurationVar(&pollEvery, "poll-interval", watchDefaultPollInterval, "File-tree poll interval (minimum 100ms)")
 
 	return cmd
 }

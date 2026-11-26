@@ -10,8 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -121,7 +123,68 @@ func memoFilePath(key string) (string, bool) {
 	if strings.ContainsAny(prefix, `/\:*?"<>|`) {
 		return "", false
 	}
-	return filepath.Join(os.TempDir(), memoDirName, prefix+".json"), true
+	return filepath.Join(memoDir, prefix+".json"), true
+}
+
+// memoDir is the memo cache directory; overridable in tests.
+var memoDir = filepath.Join(os.TempDir(), memoDirName)
+
+const (
+	memoPruneMaxAge     = 24 * time.Hour
+	memoPruneMaxEntries = 200
+	memoPruneMaxBytes   = 10 * 1024 * 1024
+)
+
+var memoPruneOnce sync.Once
+
+// PruneMemo removes stale memo files: first those older than maxAge, then the
+// oldest (by mtime) until at most maxEntries files and maxBytes total remain.
+// A non-positive limit is treated as unlimited. Best-effort: errors are ignored.
+func PruneMemo(maxAge time.Duration, maxEntries int, maxBytes int64) {
+	defer func() { _ = recover() }()
+
+	dirEntries, err := os.ReadDir(memoDir)
+	if err != nil {
+		return
+	}
+
+	type memoFile struct {
+		path  string
+		mtime time.Time
+		size  int64
+	}
+	var files []memoFile
+	var total int64
+	now := time.Now()
+	for _, e := range dirEntries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		p := filepath.Join(memoDir, e.Name())
+		if maxAge > 0 && now.Sub(info.ModTime()) > maxAge {
+			_ = os.Remove(p)
+			continue
+		}
+		files = append(files, memoFile{p, info.ModTime(), info.Size()})
+		total += info.Size()
+	}
+
+	sort.SliceStable(files, func(i, j int) bool { return files[i].mtime.Before(files[j].mtime) })
+	count := len(files)
+	for _, f := range files {
+		overCount := maxEntries > 0 && count > maxEntries
+		overBytes := maxBytes > 0 && total > maxBytes
+		if !overCount && !overBytes {
+			break
+		}
+		_ = os.Remove(f.path)
+		count--
+		total -= f.size
+	}
 }
 
 // LoadMemo loads a cached RunReport if the entry exists and is within ttl.
@@ -165,6 +228,10 @@ func SaveMemo(key string, report *RunReport) {
 	if !ok {
 		return
 	}
+
+	memoPruneOnce.Do(func() {
+		PruneMemo(memoPruneMaxAge, memoPruneMaxEntries, memoPruneMaxBytes)
+	})
 
 	data, err := json.Marshal(report)
 	if err != nil {

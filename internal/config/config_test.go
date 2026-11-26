@@ -271,3 +271,65 @@ func TestDetectNodeZeroConfigSafety(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateResourceControls(t *testing.T) {
+	base := func() *Config {
+		return &Config{Mode: ModeLocal, Checks: []CheckConfig{{Name: "a", Command: "true", Scope: ScopeProject}}}
+	}
+	okMem := []string{"", "512", "512m", "1g", "1G", "64K", "100b"}
+	for _, m := range okMem {
+		c := base()
+		c.Sandbox.Memory = m
+		if err := Validate(c); err != nil {
+			t.Errorf("memory %q should be valid: %v", m, err)
+		}
+	}
+	for _, m := range []string{"1gb", "g", "-1g", "1.5g", "abc", "1 g"} {
+		c := base()
+		c.Sandbox.Memory = m
+		if err := Validate(c); err == nil {
+			t.Errorf("memory %q should be invalid", m)
+		}
+	}
+	for _, v := range []string{"", "1", "2", "0.5", "1.25"} {
+		c := base()
+		c.Sandbox.CPUs = v
+		if err := Validate(c); err != nil {
+			t.Errorf("cpus %q should be valid: %v", v, err)
+		}
+	}
+	for _, v := range []string{"0", "-1", "abc", "NaN", "Inf", "0.0"} {
+		c := base()
+		c.Sandbox.CPUs = v
+		if err := Validate(c); err == nil {
+			t.Errorf("cpus %q should be invalid", v)
+		}
+	}
+	for _, n := range []int{0, 1, 8} {
+		c := base()
+		c.MaxParallel = n
+		if err := Validate(c); err != nil {
+			t.Errorf("max_parallel %d should be valid: %v", n, err)
+		}
+	}
+	c := base()
+	c.MaxParallel = -1
+	if err := Validate(c); err == nil {
+		t.Error("negative max_parallel should be invalid")
+	}
+}
+
+func TestLoadResourceControlsYAML(t *testing.T) {
+	dir := t.TempDir()
+	y := "mode: local\nmax_parallel: 3\nsandbox:\n  memory: 1g\n  cpus: \"2\"\nchecks:\n  - name: a\n    command: echo hi\n"
+	if err := os.WriteFile(filepath.Join(dir, ConfigFileName), []byte(y), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxParallel != 3 || cfg.Sandbox.Memory != "1g" || cfg.Sandbox.CPUs != "2" {
+		t.Fatalf("unexpected: %+v", cfg)
+	}
+}

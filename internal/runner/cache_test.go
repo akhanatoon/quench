@@ -190,3 +190,75 @@ func TestMemoLoad_BestEffortErrors(t *testing.T) {
 		t.Errorf("expected miss for corrupt memo JSON, got hit: %+v", got)
 	}
 }
+
+func useTempMemoDir(t *testing.T) string {
+	t.Helper()
+	old := memoDir
+	memoDir = t.TempDir()
+	t.Cleanup(func() { memoDir = old })
+	return memoDir
+}
+
+func writeMemoFile(t *testing.T, dir, name string, size int, age time.Duration) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, make([]byte, size), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mt := time.Now().Add(-age)
+	if err := os.Chtimes(p, mt, mt); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func exists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+func TestPruneMemo_Age(t *testing.T) {
+	dir := useTempMemoDir(t)
+	old := writeMemoFile(t, dir, "old.json", 10, 48*time.Hour)
+	fresh := writeMemoFile(t, dir, "fresh.json", 10, time.Minute)
+	PruneMemo(24*time.Hour, 100, 1<<20)
+	if exists(old) || !exists(fresh) {
+		t.Fatalf("age prune wrong: old=%v fresh=%v", exists(old), exists(fresh))
+	}
+}
+
+func TestPruneMemo_EntryCount(t *testing.T) {
+	dir := useTempMemoDir(t)
+	var paths []string
+	for i := 0; i < 5; i++ { // index 0 is oldest
+		paths = append(paths, writeMemoFile(t, dir, "f"+string(rune('a'+i))+".json", 1, time.Duration(5-i)*time.Minute))
+	}
+	PruneMemo(time.Hour, 2, 1<<20)
+	for i, p := range paths {
+		if want := i >= 3; exists(p) != want {
+			t.Errorf("file %d exists=%v want %v", i, exists(p), want)
+		}
+	}
+}
+
+func TestPruneMemo_Bytes(t *testing.T) {
+	dir := useTempMemoDir(t)
+	a := writeMemoFile(t, dir, "a.json", 100, 3*time.Minute)
+	b := writeMemoFile(t, dir, "b.json", 100, 2*time.Minute)
+	c := writeMemoFile(t, dir, "c.json", 100, time.Minute)
+	PruneMemo(time.Hour, 100, 200)
+	if exists(a) || !exists(b) || !exists(c) {
+		t.Fatalf("expected only oldest removed: a=%v b=%v c=%v", exists(a), exists(b), exists(c))
+	}
+	PruneMemo(time.Hour, 100, 100)
+	if exists(b) || !exists(c) {
+		t.Fatalf("expected b removed, c kept: b=%v c=%v", exists(b), exists(c))
+	}
+}
+
+func TestPruneMemo_MissingDir(t *testing.T) {
+	old := memoDir
+	memoDir = filepath.Join(t.TempDir(), "nope")
+	t.Cleanup(func() { memoDir = old })
+	PruneMemo(time.Hour, 1, 1) // must not panic
+	if exists(memoDir) {
+		t.Fatal("PruneMemo must not create the directory")
+	}
+}

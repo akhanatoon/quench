@@ -5,6 +5,15 @@ All notable changes to `quench` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-26
+
+### Added
+- **Sandbox resource limits**: `sandbox.memory` (e.g. `1g`) and `sandbox.cpus` (e.g. `2`) are passed to `docker run` as `--memory`, `--memory-swap` and `--cpus`, so a warm container cannot exceed its budget.
+- **`max_parallel`**: caps how many checks of one DAG wave execute at the same time (`0` = unlimited).
+- **Automatic idle-container GC**: every Docker-mode `quench run` and MCP `verify_changes` triggers a best-effort, non-blocking garbage collection of expired warm containers.
+- **Memo cache pruning**: the result cache is trimmed once per process (24h age, 200 entries, 10 MiB), oldest first.
+- **`quench watch --poll-interval`**: configurable poll interval (default 500ms, minimum 100ms), replacing the fixed 250ms.
+
 ## [0.5.2] - 2026-11-26
 
 ### Fixed
