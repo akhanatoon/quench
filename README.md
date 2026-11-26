@@ -31,8 +31,10 @@ Coding agents waste **minutes** and **thousands of context tokens** running full
 | Workflow | Cold Setup | Scope | Measured Latency | Agent Output Cost |
 | :--- | :--- | :--- | :--- | :--- |
 | **Classic CI Push Loop** | Full image + dep install | Entire repository | `2m – 8m` | Manual log scraping |
-| **Raw `go test` / `pytest` in shell** | Host state drift | Entire test suite | `8s – 45s` | `2,000 – 15,000` tokens of noisy stdout |
-| **`quench` (Warm Sandbox + Diff-Aware)** | **0ms** (warm + cached volume) | **Changed targets + direct importers** | **`~1.09s`** *(Go warm container)* | **`~120 – 400` tokens** (failures only) |
+| **Raw `go test -v ./...`** *(4-service monorepo)* | Host state drift | All 4 Go services | `41.4s` | `43.5 KB` (~10.9k tokens) |
+| **`quench` (Diff-Aware + Compact JSON)** | **0ms** (warm / local) | **Changed pkg + reverse importers** | **`4.13s`** *(uncached)* / **`2.18s`** *(cached)* | **`702 B`** (`98.4%` smaller, 9 checks skipped) |
+
+> Measured on a real polyglot monorepo (4 Go services + Next.js) after a single-file edit: `quench run --local --compact --no-cache --json` ran in `4.13s` (`~10x` faster than full `go test -v ./...` at `41.4s`) and compressed `16.6 KB` of scoped raw stdout (`43.5 KB` full suite) down to `702 B` of indented JSON (`97.3%–98.4%` reduction).
 
 ### Key Capabilities
 
@@ -45,6 +47,12 @@ Coding agents waste **minutes** and **thousands of context tokens** running full
 ---
 
 ## Installation
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install akhanatoon/tap/quench
+```
 
 ### One-Line Installer (Linux / macOS)
 
@@ -79,8 +87,9 @@ quench doctor
 # Zero-config diff-aware verification (warm Docker sandbox by default)
 quench run
 
-# Run directly on host, suppress pre-existing legacy lint lines outside git diff
-quench run --local --changed-lines-only
+# Run directly on host, auto-fix formatting/lint first, or suppress pre-existing legacy lint lines
+quench run --local --fix
+quench run --local --changed-lines-only --compact
 
 # Emit token-lean JSON, SARIF 2.1.0, or GitHub Actions annotations
 quench run --base main --format json
@@ -112,8 +121,8 @@ quench warm gc
 
 ## MCP Setup for Coding Agents
 
-`quench mcp` exposes three tools over `stdio` JSON-RPC 2.0 (all supporting optional `project_dir`):
-- `verify_changes` (`project_dir`, `base_ref`, `checks`, `mode`, `fail_fast`)
+`quench mcp` exposes three tools over `stdio` JSON-RPC 2.0 (all supporting optional `project_dir`, confined to the startup workspace root unless `--allow-dir` / `QUENCH_MCP_ALLOW_DIRS` is set):
+- `verify_changes` (`project_dir`, `base_ref`, `checks`, `mode`, `fail_fast`, `fix`, `compact`)
 - `sandbox_status` (`project_dir`)
 - `sandbox_reset` (`project_dir`, `purge_cache`)
 
@@ -185,6 +194,23 @@ claude mcp add quench -- quench mcp
 
 ---
 
+## GitHub Action
+
+Run diff-aware verification directly in pull requests with inline annotations:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- uses: akhanatoon/quench@v0.2.0
+  with:
+    base: ${{ github.event.pull_request.base.sha }}
+    format: github
+    changed-lines-only: "true"
+```
+
+---
+
 ## Optional `quench.yaml` (Including Monorepos)
 
 `quench` works with zero configuration for Go, Node/TypeScript, Python, and Rust repositories. For custom checks, monorepo `working_dir` scopes, or air-gapped network execution, run `quench init`:
@@ -196,13 +222,14 @@ sandbox:
   image: node:22-alpine
   idle_timeout: 30m
   network: bridge # bridge | none
+  user: nonroot   # optional: "nonroot" (65532:65532) or "uid:gid" with writable /tmp caches
   sync_deps: true
   memory: 1g      # optional hard cap for the warm container
   cpus: "2"       # optional CPU cap
-max_parallel: 2   # optional: max concurrent checks per wave (0 = unlimited)
   cache_paths:
     - /root/.npm
     - /workspace/node_modules
+max_parallel: 2   # optional: max concurrent checks per wave (0 = unlimited)
 checks:
   - name: web-typecheck
     working_dir: apps/web

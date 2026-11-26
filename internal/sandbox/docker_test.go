@@ -185,10 +185,87 @@ func TestSecurityArgs(t *testing.T) {
 		t.Fatalf("non-root securityArgs = %q, want %q", got, want)
 	}
 
+	got = strings.Join(securityArgs(config.SandboxConfig{User: "nonroot"}), " ")
+	want = "--security-opt no-new-privileges:true --cap-drop ALL --user 65532:65532"
+	if got != want {
+		t.Fatalf("nonroot alias securityArgs = %q, want %q", got, want)
+	}
+
 	got = strings.Join(securityArgs(config.SandboxConfig{User: "   "}), " ")
 	want = "--security-opt no-new-privileges:true --cap-drop ALL"
 	if got != want {
 		t.Fatalf("blank user securityArgs = %q, want %q", got, want)
+	}
+}
+
+func TestNonRootEnvPaths(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("default root mode keeps root cache paths", func(t *testing.T) {
+		cfg := &config.Config{
+			Stack: config.StackGo,
+			Sandbox: config.SandboxConfig{
+				Image: "golang:1.24-alpine",
+			},
+		}
+		joined := strings.Join(NewDocker(dir, cfg).buildRunArgs(config.WorkspaceModeBind), " ")
+		for _, want := range []string{
+			"-e GOMODCACHE=/go/pkg/mod",
+			"-e GOCACHE=/root/.cache/go-build",
+			"-e NPM_CONFIG_CACHE=/root/.npm",
+			"-e PIP_CACHE_DIR=/root/.cache/pip",
+		} {
+			if !strings.Contains(joined, want) {
+				t.Errorf("default mode missing %q in: %s", want, joined)
+			}
+		}
+		for _, forbidden := range []string{"--user", "-e HOME=/tmp", "/tmp/quench-"} {
+			if strings.Contains(joined, forbidden) {
+				t.Errorf("default mode should not contain %q in: %s", forbidden, joined)
+			}
+		}
+	})
+
+	cases := []struct {
+		name     string
+		user     string
+		wantUser string
+	}{
+		{name: "explicit uid:gid", user: "1000:1000", wantUser: "--user 1000:1000"},
+		{name: "nonroot alias", user: "nonroot", wantUser: "--user 65532:65532"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Stack: config.StackGo,
+				Sandbox: config.SandboxConfig{
+					Image: "golang:1.24-alpine",
+					User:  tc.user,
+				},
+			}
+			joined := strings.Join(NewDocker(dir, cfg).buildRunArgs(config.WorkspaceModeBind), " ")
+			if !strings.Contains(joined, tc.wantUser) {
+				t.Errorf("expected %q in: %s", tc.wantUser, joined)
+			}
+			for _, want := range []string{
+				"-e HOME=/tmp",
+				"-e GOMODCACHE=/tmp/quench-gomod",
+				"-e GOCACHE=/tmp/quench-gocache",
+				"-e NPM_CONFIG_CACHE=/tmp/quench-npm",
+				"-e PIP_CACHE_DIR=/tmp/quench-pip",
+				"-e XDG_CACHE_HOME=/tmp/quench-cache",
+			} {
+				if !strings.Contains(joined, want) {
+					t.Errorf("non-root mode (%s) missing %q in: %s", tc.user, want, joined)
+				}
+			}
+			for _, forbidden := range []string{"/root/.cache/", "/root/.npm", "GOMODCACHE=/go/pkg/mod"} {
+				if strings.Contains(joined, forbidden) {
+					t.Errorf("non-root mode (%s) must not contain %q in: %s", tc.user, forbidden, joined)
+				}
+			}
+		})
 	}
 }
 

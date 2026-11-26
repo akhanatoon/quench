@@ -232,13 +232,28 @@ func (d *DockerSandbox) buildRunArgs(workspaceMode string) []string {
 		"-e", "CI=true",
 		"-e", "NO_COLOR=1",
 		"-e", "FORCE_COLOR=0",
-		"-e", "GOMODCACHE=/go/pkg/mod",
-		"-e", "GOCACHE=/root/.cache/go-build",
-		"-e", "NPM_CONFIG_CACHE=/root/.npm",
-		"-e", "PIP_CACHE_DIR=/root/.cache/pip",
+	}
+	if strings.TrimSpace(d.cfg.Sandbox.User) != "" {
+		args = append(args,
+			"-e", "HOME=/tmp",
+			"-e", "GOMODCACHE=/tmp/quench-gomod",
+			"-e", "GOCACHE=/tmp/quench-gocache",
+			"-e", "NPM_CONFIG_CACHE=/tmp/quench-npm",
+			"-e", "PIP_CACHE_DIR=/tmp/quench-pip",
+			"-e", "XDG_CACHE_HOME=/tmp/quench-cache",
+		)
+	} else {
+		args = append(args,
+			"-e", "GOMODCACHE=/go/pkg/mod",
+			"-e", "GOCACHE=/root/.cache/go-build",
+			"-e", "NPM_CONFIG_CACHE=/root/.npm",
+			"-e", "PIP_CACHE_DIR=/root/.cache/pip",
+		)
+	}
+	args = append(args,
 		"-v", workspaceMount,
 		"-w", "/workspace",
-	}
+	)
 	if d.suffix != "" {
 		args = append(args, "--label", "quench.image_suffix="+d.suffix)
 	}
@@ -714,6 +729,9 @@ func securityArgs(s config.SandboxConfig) []string {
 		"--cap-drop", "ALL",
 	}
 	if u := strings.TrimSpace(s.User); u != "" {
+		if strings.EqualFold(u, "nonroot") {
+			u = "65532:65532"
+		}
 		out = append(out, "--user", u)
 	}
 	return out

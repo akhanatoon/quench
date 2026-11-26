@@ -5,6 +5,14 @@ All notable changes to `quench` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-26
+
+### Added
+- **Non-root Docker sandbox execution (`sandbox.user: "nonroot"`)**: Maps `nonroot` to `--user 65532:65532` and redirects `HOME`, `GOPATH`, `GOCACHE`, `GOMODCACHE`, `npm_config_cache`, `PIP_CACHE_DIR`, and `CARGO_HOME` to writable `/tmp/quench-*` directories whenever a custom `sandbox.user` is configured.
+- **Reusable GitHub Action (`action.yml`)**: Composite action (`uses: akhanatoon/quench@v0.2.0`) that downloads the release binary, verifies its SHA-256 against `checksums.txt`, and runs diff-aware verification with GitHub Actions `::error`/`::warning` annotations.
+- **Homebrew tap & formula generator (`scripts/render-homebrew-formula.py`)**: Stdlib-only Python script that renders `Formula/quench.rb` for `akhanatoon/homebrew-tap` directly from release `checksums.txt` across `darwin`/`linux` (`arm64` + `amd64`).
+- **Launch kit & real monorepo benchmarks (`docs/LAUNCH.md`, `README.md`)**: Documented real polyglot monorepo verification benchmarks (41.4s / 43.5 KB full suite vs 4.13s / 702 B compact `quench` JSON — ~10x faster, 97.3%–98.4% log reduction).
+
 ## [0.1.1] - 2026-11-26
 
 ### Added
@@ -37,4 +45,6 @@ Initial public alpha release of `quench` — a single-binary Go CLI and native `
   - Commands: `init`, `run`, `watch`, `warm`, `hook`, `bench`, `doctor`, and `mcp` (`install --client claude|codex|cursor|opencode`).
   - MCP tools (`verify_changes`, `sandbox_status`, `sandbox_reset`) confined to the startup workspace root by default (additional roots require explicit `--allow-dir` or `QUENCH_MCP_ALLOW_DIRS`).
 
+[0.2.0]: https://github.com/akhanatoon/quench/releases/tag/v0.2.0
+[0.1.1]: https://github.com/akhanatoon/quench/releases/tag/v0.1.1
 [0.1.0]: https://github.com/akhanatoon/quench/releases/tag/v0.1.0
