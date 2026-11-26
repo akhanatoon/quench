@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/akhanatoon/quench/internal/config"
 	"github.com/akhanatoon/quench/internal/sandbox"
@@ -31,7 +32,7 @@ func newWarmCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sb := sandbox.NewDocker(projectDir, cfg)
+			sb := sandbox.NewDockerPool(projectDir, cfg)
 			if err := sb.EnsureWarm(context.Background()); err != nil {
 				return err
 			}
@@ -58,7 +59,7 @@ func newWarmCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sb := sandbox.NewDocker(projectDir, cfg)
+			sb := sandbox.NewDockerPool(projectDir, cfg)
 			st, err := sb.Status(context.Background())
 			if err != nil && !jsonOut {
 				return err
@@ -70,6 +71,11 @@ func newWarmCmd() *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Container : %s\nState     : %s\nImage     : %s\nStack     : %s\nUptime    : %s\nSynced    : %v\n",
 				st.ContainerName, st.State, st.Image, st.Stack, st.Uptime, st.DepsSynced)
+			if allSt, allErr := sb.AllStatuses(context.Background()); allErr == nil && len(allSt) > 1 {
+				for _, sec := range allSt[1:] {
+					fmt.Fprintf(cmd.OutOrStdout(), "Secondary : %s (%s, state=%s)\n", sec.ContainerName, sec.Image, sec.State)
+				}
+			}
 			return nil
 		},
 	}
@@ -87,18 +93,19 @@ func newWarmCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sb := sandbox.NewDocker(projectDir, cfg)
+			sb := sandbox.NewDockerPool(projectDir, cfg)
+			names := strings.Join(sb.ContainerNames(), ", ")
 			if purgeCache {
 				if err := sb.Reset(context.Background(), true); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Removed warm container %s and purged cache volumes.\n", sb.ContainerName())
+				fmt.Fprintf(cmd.OutOrStdout(), "Removed warm container(s) %s and purged cache volumes.\n", names)
 				return nil
 			}
 			if err := sb.Teardown(context.Background()); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Removed warm container %s.\n", sb.ContainerName())
+			fmt.Fprintf(cmd.OutOrStdout(), "Removed warm container(s) %s.\n", names)
 			return nil
 		},
 	}

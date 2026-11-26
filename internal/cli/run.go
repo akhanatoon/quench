@@ -44,7 +44,7 @@ func newRunCmd() *cobra.Command {
 			if mode == config.ModeLocal {
 				sb = sandbox.NewLocal(projectDir, cfg.Stack)
 			} else {
-				sb = sandbox.NewDocker(projectDir, cfg)
+				sb = sandbox.NewDockerPool(projectDir, cfg)
 			}
 
 			report, err := runner.Run(context.Background(), cfg, sb, runner.Options{

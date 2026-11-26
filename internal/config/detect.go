@@ -55,6 +55,7 @@ func DetectConfig(projectDir string) (*Config, error) {
 		for _, ch := range ws.Config.Checks {
 			ch.WorkingDir = ws.RelDir
 			ch.Stack = ws.Config.Stack
+			ch.Image = ws.Config.Sandbox.Image
 			if prefix != "" {
 				ch.Name = prefix + ch.Name
 			}
@@ -343,6 +344,8 @@ func detectNode(projectDir string) *Config {
 
 	useJest := pkg.hasDep("jest") || hasAnyGlob(projectDir, "jest.config.*")
 	useVitest := pkg.hasDep("vitest") || hasAnyGlob(projectDir, "vitest.config.*")
+	testScript := strings.TrimSpace(pkg.Scripts["test"])
+	hasCustomTestScript := testScript != "" && !strings.Contains(strings.ToLower(testScript), "no test specified")
 	switch {
 	case useJest && !useVitest:
 		checks = append(checks, CheckConfig{
@@ -354,7 +357,27 @@ func detectNode(projectDir string) *Config {
 			Timeout:    "90s",
 			Extensions: jsExts,
 		})
-	case useVitest || (len(pkg.Dependencies) == 0 && len(pkg.DevDependencies) == 0):
+	case useVitest:
+		checks = append(checks, CheckConfig{
+			Name:       "test",
+			Command:    runner + " vitest related --run {{files}}",
+			Scope:      ScopeChangedFiles,
+			Stack:      StackNode,
+			Parser:     "vitest",
+			Timeout:    "90s",
+			Extensions: jsExts,
+		})
+	case hasCustomTestScript:
+		checks = append(checks, CheckConfig{
+			Name:       "test",
+			Command:    "npm test",
+			Scope:      ScopeProject,
+			Stack:      StackNode,
+			Parser:     "generic",
+			Timeout:    "90s",
+			Extensions: jsExts,
+		})
+	case len(pkg.Dependencies) == 0 && len(pkg.DevDependencies) == 0 && !hasTS:
 		checks = append(checks, CheckConfig{
 			Name:       "test",
 			Command:    runner + " vitest related --run {{files}}",

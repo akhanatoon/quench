@@ -75,6 +75,7 @@ type CheckConfig struct {
 	Command    string    `yaml:"command" json:"command"`
 	Scope      string    `yaml:"scope" json:"scope"`
 	Stack      StackType `yaml:"stack,omitempty" json:"stack,omitempty"`
+	Image      string    `yaml:"image,omitempty" json:"image,omitempty"`
 	WorkingDir string    `yaml:"working_dir,omitempty" json:"working_dir,omitempty"`
 	Parser     string    `yaml:"parser,omitempty" json:"parser,omitempty"`
 	Timeout    string    `yaml:"timeout,omitempty" json:"timeout,omitempty"`

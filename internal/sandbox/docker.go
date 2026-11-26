@@ -37,22 +37,47 @@ func (e *DaemonUnavailableError) Error() string {
 type DockerSandbox struct {
 	projectDir    string
 	hash8         string
+	suffix        string
+	imageOverride string
 	containerName string
 	cfg           *config.Config
 }
 
 func NewDocker(projectDir string, cfg *config.Config) *DockerSandbox {
+	return NewDockerWithImage(projectDir, cfg, "", "")
+}
+
+// NewDockerWithImage constructs a DockerSandbox with an optional image override and deterministic
+// name suffix so multiple warm containers per repository coexist without container or cache volume collisions.
+func NewDockerWithImage(projectDir string, cfg *config.Config, imageOverride string, suffix string) *DockerSandbox {
 	abs, err := filepath.Abs(projectDir)
 	if err != nil {
 		abs = projectDir
 	}
 	h := ProjectHash8(abs)
+	cleanSuffix := strings.Trim(nonSlugRe.ReplaceAllString(strings.ToLower(suffix), "-"), "-")
+	name := ContainerPrefix + h
+	if cleanSuffix != "" {
+		name = name + "-" + cleanSuffix
+	}
 	return &DockerSandbox{
 		projectDir:    abs,
 		hash8:         h,
-		containerName: ContainerPrefix + h,
+		suffix:        cleanSuffix,
+		imageOverride: strings.TrimSpace(imageOverride),
+		containerName: name,
 		cfg:           cfg,
 	}
+}
+
+func (d *DockerSandbox) configuredImage() string {
+	if d.imageOverride != "" {
+		return d.imageOverride
+	}
+	if d.cfg != nil {
+		return strings.TrimSpace(d.cfg.Sandbox.Image)
+	}
+	return ""
 }
 
 func (d *DockerSandbox) ModeName() string {
@@ -119,7 +144,7 @@ func (d *DockerSandbox) EnsureWarm(ctx context.Context) error {
 	info, err := d.inspect(ctx)
 	if err == nil && info != nil {
 		// Recreate if image changed in config
-		if d.cfg.Sandbox.Image != "" && info.Config.Image != d.cfg.Sandbox.Image {
+		if desiredImg := d.configuredImage(); desiredImg != "" && info.Config.Image != desiredImg {
 			_ = d.Teardown(ctx)
 			info = nil
 		}
@@ -155,7 +180,7 @@ func (d *DockerSandbox) EnsureWarm(ctx context.Context) error {
 }
 
 func (d *DockerSandbox) startNewContainer(ctx context.Context) error {
-	image := d.cfg.Sandbox.Image
+	image := d.configuredImage()
 	if image == "" {
 		image = "alpine:3.20"
 	}
@@ -178,6 +203,9 @@ func (d *DockerSandbox) startNewContainer(ctx context.Context) error {
 		"-e", "PIP_CACHE_DIR=/root/.cache/pip",
 		"-v", fmt.Sprintf("%s:/workspace", hostPath),
 		"-w", "/workspace",
+	}
+	if d.suffix != "" {
+		args = append(args, "--label", "quench.image_suffix="+d.suffix)
 	}
 
 	// Start with bridge during setup if sync_deps is enabled; otherwise honor network directly
@@ -212,7 +240,11 @@ func (d *DockerSandbox) syncDependenciesIfNeeded(ctx context.Context) error {
 
 	setupCmd := d.cfg.Sandbox.SetupCommand
 	if setupCmd == "" {
-		setupCmd = defaultSetupCommand(d.projectDir, d.cfg.Stack)
+		setupStack := d.cfg.Stack
+		if d.imageOverride != "" || setupStack == config.StackPolyglot {
+			setupStack = inferStackFromImage(d.configuredImage())
+		}
+		setupCmd = defaultSetupCommand(d.projectDir, setupStack)
 	}
 	if setupCmd == "" {
 		return nil
@@ -301,7 +333,7 @@ func (d *DockerSandbox) Status(ctx context.Context) (StatusInfo, error) {
 		Mode:          "docker-warm",
 		State:         "absent",
 		ContainerName: d.containerName,
-		Image:         d.cfg.Sandbox.Image,
+		Image:         d.configuredImage(),
 		ProjectDir:    filepath.ToSlash(d.projectDir),
 		Stack:         string(d.cfg.Stack),
 		CacheVolumes:  vols,
@@ -376,6 +408,9 @@ func (d *DockerSandbox) cacheVolumeName(containerPath string) string {
 	slug := strings.Trim(nonSlugRe.ReplaceAllString(strings.ToLower(containerPath), "-"), "-")
 	if slug == "" {
 		slug = "cache"
+	}
+	if d.suffix != "" {
+		return fmt.Sprintf("%s%s-%s-%s", VolumePrefix, d.hash8, d.suffix, slug)
 	}
 	return fmt.Sprintf("%s%s-%s", VolumePrefix, d.hash8, slug)
 }
@@ -493,14 +528,34 @@ func defaultSetupCommand(projectDir string, stack config.StackType) string {
 			return "npm install --no-audit --no-fund"
 		}
 	case config.StackPython:
-		if fileExists(filepath.Join(projectDir, "requirements.txt")) {
+		hasReq := fileExists(filepath.Join(projectDir, "requirements.txt"))
+		hasPyproject := fileExists(filepath.Join(projectDir, "pyproject.toml"))
+		switch {
+		case hasReq && hasPyproject:
+			return `pip install -q --disable-pip-version-check -r requirements.txt && (pip install -q --disable-pip-version-check -e ".[dev]" 2>/dev/null || pip install -q --disable-pip-version-check -e . 2>/dev/null || true)`
+		case hasReq:
 			return "pip install -q --disable-pip-version-check -r requirements.txt"
-		}
-		if fileExists(filepath.Join(projectDir, "pyproject.toml")) {
-			return "pip install -q --disable-pip-version-check -e . 2>/dev/null || true"
+		case hasPyproject:
+			return `pip install -q --disable-pip-version-check -e ".[dev]" 2>/dev/null || pip install -q --disable-pip-version-check -e . 2>/dev/null || true`
 		}
 	}
 	return ""
+}
+
+func inferStackFromImage(image string) config.StackType {
+	lower := strings.ToLower(strings.TrimSpace(image))
+	switch {
+	case strings.HasPrefix(lower, "golang:") || strings.Contains(lower, "/golang:"):
+		return config.StackGo
+	case strings.HasPrefix(lower, "node:") || strings.Contains(lower, "/node:"):
+		return config.StackNode
+	case strings.HasPrefix(lower, "python:") || strings.Contains(lower, "/python:"):
+		return config.StackPython
+	case strings.HasPrefix(lower, "rust:") || strings.Contains(lower, "/rust:"):
+		return config.StackRust
+	default:
+		return config.StackGeneric
+	}
 }
 
 func fileExists(p string) bool {

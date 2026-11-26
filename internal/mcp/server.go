@@ -236,7 +236,7 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 				// Graceful auto-fallback to local mode when Docker daemon is offline and docker wasn't explicitly forced
 				sb = sandbox.NewLocal(projDir, cfg.Stack)
 			} else {
-				sb = sandbox.NewDocker(projDir, cfg)
+				sb = sandbox.NewDockerPool(projDir, cfg)
 			}
 		}
 
@@ -274,7 +274,7 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 		if cfg.Mode == config.ModeLocal {
 			sb = sandbox.NewLocal(projDir, cfg.Stack)
 		} else {
-			sb = sandbox.NewDocker(projDir, cfg)
+			sb = sandbox.NewDockerPool(projDir, cfg)
 		}
 		st, stErr := sb.Status(ctx)
 		out := map[string]any{
@@ -301,7 +301,7 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 		if err != nil {
 			return errorToolResult(err.Error()), nil
 		}
-		sb := sandbox.NewDocker(projDir, cfg)
+		sb := sandbox.NewDockerPool(projDir, cfg)
 		if err := sb.Reset(ctx, args.PurgeCache); err != nil {
 			return errorToolResult(err.Error()), nil
 		}

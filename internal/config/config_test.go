@@ -145,12 +145,129 @@ func TestDetectPolyglotMonorepoAndRust(t *testing.T) {
 	for _, ch := range cfg.Checks {
 		if ch.WorkingDir == "apps/web" && ch.Name == "apps-web-typecheck" {
 			foundWeb = true
+			if ch.Image != "node:22-alpine" {
+				t.Fatalf("expected apps/web check image node:22-alpine, got %q", ch.Image)
+			}
 		}
 		if ch.WorkingDir == "services/engine" && ch.Name == "services-engine-check" && ch.Stack == StackRust {
 			foundRust = true
+			if ch.Image != "rust:1.84-slim" {
+				t.Fatalf("expected services/engine check image rust:1.84-slim, got %q", ch.Image)
+			}
 		}
 	}
 	if !foundWeb || !foundRust {
 		t.Fatalf("expected polyglot checks for apps/web and services/engine, got: %+v", cfg.Checks)
 	}
+}
+
+func TestDetectPolyglotPythonAndNodePerCheckImages(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "backend"), 0o755)
+	_ = os.MkdirAll(filepath.Join(dir, "frontend"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "backend", "pyproject.toml"), []byte("[project]\nname = \"api\"\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "frontend", "package.json"), []byte(`{"name":"ui","devDependencies":{"typescript":"^5.0.0"}}`), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "frontend", "tsconfig.json"), []byte(`{}`), 0o644)
+
+	cfg, _, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load polyglot failed: %v", err)
+	}
+	if cfg.Stack != StackPolyglot {
+		t.Fatalf("expected stack polyglot, got %s", cfg.Stack)
+	}
+	if cfg.Sandbox.Image != "python:3.12-slim" {
+		t.Fatalf("expected primary image python:3.12-slim, got %s", cfg.Sandbox.Image)
+	}
+
+	var sawPy, sawNode bool
+	for _, ch := range cfg.Checks {
+		switch ch.WorkingDir {
+		case "backend":
+			sawPy = true
+			if ch.Image != "python:3.12-slim" {
+				t.Fatalf("expected python check %q image python:3.12-slim, got %q", ch.Name, ch.Image)
+			}
+		case "frontend":
+			sawNode = true
+			if ch.Image != "node:22-alpine" {
+				t.Fatalf("expected node check %q image node:22-alpine, got %q", ch.Name, ch.Image)
+			}
+		}
+	}
+	if !sawPy || !sawNode {
+		t.Fatalf("expected both backend and frontend checks, got: %+v", cfg.Checks)
+	}
+}
+
+func TestDetectNodeZeroConfigSafety(t *testing.T) {
+	t.Run("custom npm test script without vitest or jest", func(t *testing.T) {
+		dir := t.TempDir()
+		pkgJSON := `{
+  "name": "svc",
+  "scripts": { "test": "node --test" }
+}`
+		_ = os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkgJSON), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "tsconfig.json"), []byte(`{}`), 0o644)
+
+		cfg, _, err := Load(dir)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+		var testCheck *CheckConfig
+		for i := range cfg.Checks {
+			if cfg.Checks[i].Name == "test" {
+				testCheck = &cfg.Checks[i]
+			}
+		}
+		if testCheck == nil {
+			t.Fatalf("expected npm test check, got: %+v", cfg.Checks)
+		}
+		if testCheck.Command != "npm test" || testCheck.Scope != ScopeProject || testCheck.Parser != "generic" {
+			t.Fatalf("unexpected test check: %+v", *testCheck)
+		}
+	})
+
+	t.Run("placeholder test script and tsconfig skips broken vitest", func(t *testing.T) {
+		dir := t.TempDir()
+		pkgJSON := `{
+  "name": "app",
+  "scripts": { "test": "echo \"Error: no test specified\" && exit 1" }
+}`
+		_ = os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkgJSON), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "tsconfig.json"), []byte(`{}`), 0o644)
+
+		cfg, _, err := Load(dir)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+		for _, ch := range cfg.Checks {
+			if ch.Name == "test" {
+				t.Fatalf("expected no test check when only placeholder test script exists with tsconfig.json, got: %+v", ch)
+			}
+		}
+	})
+
+	t.Run("no test runner or script with tsconfig skips broken vitest", func(t *testing.T) {
+		dir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"ts-only"}`), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "tsconfig.json"), []byte(`{}`), 0o644)
+
+		cfg, _, err := Load(dir)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+		var sawTypecheck bool
+		for _, ch := range cfg.Checks {
+			if ch.Name == "typecheck" {
+				sawTypecheck = true
+			}
+			if ch.Name == "test" {
+				t.Fatalf("expected no broken vitest check when tsconfig.json exists without test runner, got: %+v", ch)
+			}
+		}
+		if !sawTypecheck {
+			t.Fatalf("expected typecheck check, got: %+v", cfg.Checks)
+		}
+	})
 }

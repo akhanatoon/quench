@@ -98,7 +98,15 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 			go func(plan plannedCheck) {
 				defer wg.Done()
 				cStart := time.Now()
-				execRes, execErr := sb.Exec(runCtx, plan.resolved.WorkingDir, plan.resolved.Command, plan.cfg.ParsedTimeout())
+				var (
+					execRes sandbox.ExecResult
+					execErr error
+				)
+				if imgSB, ok := sb.(sandbox.ImageAwareSandbox); ok && plan.cfg.Image != "" {
+					execRes, execErr = imgSB.ExecWithImage(runCtx, plan.resolved.WorkingDir, plan.cfg.Image, plan.resolved.Command, plan.cfg.ParsedTimeout())
+				} else {
+					execRes, execErr = sb.Exec(runCtx, plan.resolved.WorkingDir, plan.resolved.Command, plan.cfg.ParsedTimeout())
+				}
 				dur := time.Since(cStart).Milliseconds()
 				totalRawBytes.Add(int64(len(execRes.Combined)))
 
