@@ -99,6 +99,11 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 	var totalRawBytes atomic.Int64
 
 	if anyActive {
+		waves, waveErr := BuildWaves(selected)
+		if waveErr != nil {
+			return nil, waveErr
+		}
+
 		if err := sb.EnsureWarm(ctx); err != nil {
 			return nil, err
 		}
@@ -106,133 +111,182 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 		runCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
-		var wg sync.WaitGroup
+		statusByName := make(map[string]string, len(selected))
 		for _, p := range plans {
 			if p.resolved.Skip {
+				statusByName[p.cfg.Name] = StatusSkipped
+			}
+		}
+
+		var statusMu sync.Mutex
+		for _, wave := range waves {
+			if opts.FailFast && runCtx.Err() != nil {
+				for _, idx := range wave {
+					p := plans[idx]
+					if p.resolved.Skip {
+						continue
+					}
+					results[p.index] = CheckResult{
+						Name:       p.cfg.Name,
+						Status:     StatusSkipped,
+						WorkingDir: p.resolved.WorkingDir,
+						SkipReason: "cancelled by --fail-fast",
+					}
+					statusByName[p.cfg.Name] = StatusSkipped
+				}
 				continue
 			}
-			wg.Add(1)
-			go func(plan plannedCheck) {
-				defer wg.Done()
-				cStart := time.Now()
-				var (
-					execRes sandbox.ExecResult
-					execErr error
-				)
-				if imgSB, ok := sb.(sandbox.ImageAwareSandbox); ok && plan.cfg.Image != "" {
-					execRes, execErr = imgSB.ExecWithImage(runCtx, plan.resolved.WorkingDir, plan.cfg.Image, plan.resolved.Command, plan.cfg.ParsedTimeout())
-				} else {
-					execRes, execErr = sb.Exec(runCtx, plan.resolved.WorkingDir, plan.resolved.Command, plan.cfg.ParsedTimeout())
-				}
-				dur := time.Since(cStart).Milliseconds()
-				totalRawBytes.Add(int64(len(execRes.Combined)))
 
-				if execErr != nil {
-					results[plan.index] = CheckResult{
-						Name:       plan.cfg.Name,
-						Status:     StatusFailed,
-						WorkingDir: plan.resolved.WorkingDir,
-						DurationMs: dur,
-						Command:    plan.resolved.Command,
-						Failures: []Failure{
-							{
-								Message:    fmt.Sprintf("execution error: %v", execErr),
-								RawExcerpt: execErr.Error(),
-							},
-						},
+			var wg sync.WaitGroup
+			for _, idx := range wave {
+				p := plans[idx]
+				if p.resolved.Skip {
+					continue
+				}
+				if dep, failed := FailedDependency(p.cfg, statusByName); failed {
+					results[p.index] = CheckResult{
+						Name:       p.cfg.Name,
+						Status:     StatusSkipped,
+						WorkingDir: p.resolved.WorkingDir,
+						SkipReason: "dependency failed: " + dep,
 					}
-					if opts.FailFast {
-						cancel()
-					}
-					return
+					statusByName[p.cfg.Name] = StatusDepFailed
+					continue
 				}
 
-				if execRes.TimedOut {
-					results[plan.index] = CheckResult{
-						Name:       plan.cfg.Name,
-						Status:     StatusFailed,
-						WorkingDir: plan.resolved.WorkingDir,
-						DurationMs: dur,
-						Command:    plan.resolved.Command,
-						Failures: []Failure{
-							{
-								Message:    fmt.Sprintf("check timed out after %s", plan.cfg.ParsedTimeout()),
-								RawExcerpt: truncateTail(execRes.Combined, 240),
-							},
-						},
+				wg.Add(1)
+				go func(plan plannedCheck) {
+					defer wg.Done()
+					cStart := time.Now()
+					var (
+						execRes sandbox.ExecResult
+						execErr error
+					)
+					if imgSB, ok := sb.(sandbox.ImageAwareSandbox); ok && plan.cfg.Image != "" {
+						execRes, execErr = imgSB.ExecWithImage(runCtx, plan.resolved.WorkingDir, plan.cfg.Image, plan.resolved.Command, plan.cfg.ParsedTimeout())
+					} else {
+						execRes, execErr = sb.Exec(runCtx, plan.resolved.WorkingDir, plan.resolved.Command, plan.cfg.ParsedTimeout())
 					}
-					if opts.FailFast {
-						cancel()
-					}
-					return
-				}
+					dur := time.Since(cStart).Milliseconds()
+					totalRawBytes.Add(int64(len(execRes.Combined)))
 
-				if execRes.ExitCode == 0 {
-					results[plan.index] = CheckResult{
-						Name:       plan.cfg.Name,
-						Status:     StatusPassed,
-						WorkingDir: plan.resolved.WorkingDir,
-						DurationMs: dur,
+					setStatus := func(st string) {
+						statusMu.Lock()
+						statusByName[plan.cfg.Name] = st
+						statusMu.Unlock()
 					}
-					return
-				}
 
-				parseRoot := absDir
-				if plan.resolved.WorkingDir != "" {
-					parseRoot = filepath.Join(absDir, filepath.FromSlash(plan.resolved.WorkingDir))
-				}
-				failures, truncated := parser.Parse(plan.cfg.Parser, plan.resolved.Command, parseRoot, execRes.Combined)
-				filteredOut := 0
-				if opts.ChangedLinesOnly && len(hunkRanges) > 0 && len(failures) > 0 {
-					var kept []Failure
-					for _, f := range failures {
-						repoRel := f.File
-						if plan.resolved.WorkingDir != "" && repoRel != "" && !strings.HasPrefix(repoRel, plan.resolved.WorkingDir+"/") {
-							repoRel = plan.resolved.WorkingDir + "/" + repoRel
-						}
-						// Always keep test failures; only suppress pre-existing non-diff linter/typecheck noise
-						if diff.IsTestFile(repoRel) || diff.LineInDiff(hunkRanges, repoRel, f.Line) {
-							kept = append(kept, f)
-						} else {
-							filteredOut++
-						}
-					}
-					failures = kept
-					if len(failures) == 0 && filteredOut > 0 {
+					if execErr != nil {
 						results[plan.index] = CheckResult{
-							Name:        plan.cfg.Name,
-							Status:      StatusPassed,
-							WorkingDir:  plan.resolved.WorkingDir,
-							DurationMs:  dur,
-							FilteredOut: filteredOut,
+							Name:       plan.cfg.Name,
+							Status:     StatusFailed,
+							WorkingDir: plan.resolved.WorkingDir,
+							DurationMs: dur,
+							Command:    plan.resolved.Command,
+							Failures: []Failure{
+								{
+									Message:    fmt.Sprintf("execution error: %v", execErr),
+									RawExcerpt: execErr.Error(),
+								},
+							},
+						}
+						setStatus(StatusFailed)
+						if opts.FailFast {
+							cancel()
 						}
 						return
 					}
-				}
-				if len(failures) == 0 {
-					failures = []Failure{
-						{
-							Message:    fmt.Sprintf("command exited with code %d", execRes.ExitCode),
-							RawExcerpt: truncateTail(execRes.Combined, 240),
-						},
+
+					if execRes.TimedOut {
+						results[plan.index] = CheckResult{
+							Name:       plan.cfg.Name,
+							Status:     StatusFailed,
+							WorkingDir: plan.resolved.WorkingDir,
+							DurationMs: dur,
+							Command:    plan.resolved.Command,
+							Failures: []Failure{
+								{
+									Message:    fmt.Sprintf("check timed out after %s", plan.cfg.ParsedTimeout()),
+									RawExcerpt: truncateTail(execRes.Combined, 240),
+								},
+							},
+						}
+						setStatus(StatusFailed)
+						if opts.FailFast {
+							cancel()
+						}
+						return
 					}
-				}
-				results[plan.index] = CheckResult{
-					Name:           plan.cfg.Name,
-					Status:         StatusFailed,
-					WorkingDir:     plan.resolved.WorkingDir,
-					DurationMs:     dur,
-					Command:        plan.resolved.Command,
-					FilteredOut:    filteredOut,
-					TruncatedCount: truncated,
-					Failures:       failures,
-				}
-				if opts.FailFast {
-					cancel()
-				}
-			}(p)
+
+					if execRes.ExitCode == 0 {
+						results[plan.index] = CheckResult{
+							Name:       plan.cfg.Name,
+							Status:     StatusPassed,
+							WorkingDir: plan.resolved.WorkingDir,
+							DurationMs: dur,
+						}
+						setStatus(StatusPassed)
+						return
+					}
+
+					parseRoot := absDir
+					if plan.resolved.WorkingDir != "" {
+						parseRoot = filepath.Join(absDir, filepath.FromSlash(plan.resolved.WorkingDir))
+					}
+					failures, truncated := parser.Parse(plan.cfg.Parser, plan.resolved.Command, parseRoot, execRes.Combined)
+					filteredOut := 0
+					if opts.ChangedLinesOnly && len(hunkRanges) > 0 && len(failures) > 0 {
+						var kept []Failure
+						for _, f := range failures {
+							repoRel := f.File
+							if plan.resolved.WorkingDir != "" && repoRel != "" && !strings.HasPrefix(repoRel, plan.resolved.WorkingDir+"/") {
+								repoRel = plan.resolved.WorkingDir + "/" + repoRel
+							}
+							if diff.IsTestFile(repoRel) || diff.LineInDiff(hunkRanges, repoRel, f.Line) {
+								kept = append(kept, f)
+							} else {
+								filteredOut++
+							}
+						}
+						failures = kept
+						if len(failures) == 0 && filteredOut > 0 {
+							results[plan.index] = CheckResult{
+								Name:        plan.cfg.Name,
+								Status:      StatusPassed,
+								WorkingDir:  plan.resolved.WorkingDir,
+								DurationMs:  dur,
+								FilteredOut: filteredOut,
+							}
+							setStatus(StatusPassed)
+							return
+						}
+					}
+					if len(failures) == 0 {
+						failures = []Failure{
+							{
+								Message:    fmt.Sprintf("command exited with code %d", execRes.ExitCode),
+								RawExcerpt: truncateTail(execRes.Combined, 240),
+							},
+						}
+					}
+					results[plan.index] = CheckResult{
+						Name:           plan.cfg.Name,
+						Status:         StatusFailed,
+						WorkingDir:     plan.resolved.WorkingDir,
+						DurationMs:     dur,
+						Command:        plan.resolved.Command,
+						FilteredOut:    filteredOut,
+						TruncatedCount: truncated,
+						Failures:       failures,
+					}
+					setStatus(StatusFailed)
+					if opts.FailFast {
+						cancel()
+					}
+				}(p)
+			}
+			wg.Wait()
 		}
-		wg.Wait()
 	}
 
 	var summary Summary

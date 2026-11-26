@@ -188,12 +188,19 @@ func Resolve(repoDir string, stack config.StackType, check config.CheckConfig, c
 	case config.ScopeChangedFiles:
 		fallthrough
 	default:
-		filesArg := strings.Join(quoteArgs(matched), " ")
-		cmd := replacePlaceholders(check.Command, quoteArgs(matched), "./...", filesArg)
+		targets := matched
+		if effectiveStack == config.StackNode &&
+			strings.Contains(strings.ToLower(check.Name), "test") &&
+			!strings.Contains(check.Command, "vitest related") &&
+			!strings.Contains(check.Command, "--findRelatedTests") {
+			targets = filterByExtensions(ExpandJSReverseImporters(workDir, matched), check.Extensions)
+		}
+		filesArg := strings.Join(quoteArgs(targets), " ")
+		cmd := replacePlaceholders(check.Command, quoteArgs(targets), "./...", filesArg)
 		return ResolvedCheck{
 			Command:      cmd,
 			WorkingDir:   check.WorkingDir,
-			MatchedFiles: matched,
+			MatchedFiles: targets,
 		}
 	}
 }

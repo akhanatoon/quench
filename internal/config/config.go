@@ -80,6 +80,7 @@ type CheckConfig struct {
 	Parser     string    `yaml:"parser,omitempty" json:"parser,omitempty"`
 	Timeout    string    `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	Extensions []string  `yaml:"extensions,omitempty" json:"extensions,omitempty"`
+	DependsOn  []string  `yaml:"depends_on,omitempty" json:"depends_on,omitempty"`
 }
 
 func (c CheckConfig) ParsedTimeout() time.Duration {
@@ -213,6 +214,54 @@ func Validate(cfg *Config) error {
 			}
 		}
 	}
+
+	depsByName := make(map[string][]string, len(cfg.Checks))
+	for _, ch := range cfg.Checks {
+		for _, dep := range ch.DependsOn {
+			if dep == "" {
+				return fmt.Errorf("check %q has empty depends_on entry", ch.Name)
+			}
+			if dep == ch.Name {
+				return fmt.Errorf("check %q cannot depend on itself (dependency cycle)", ch.Name)
+			}
+			if !seen[dep] {
+				return fmt.Errorf("check %q depends_on unknown check %q", ch.Name, dep)
+			}
+		}
+		depsByName[ch.Name] = ch.DependsOn
+	}
+
+	// 3-color DFS cycle detection (0=unvisited, 1=visiting, 2=visited).
+	const (
+		colorWhite = 0
+		colorGray  = 1
+		colorBlack = 2
+	)
+	color := make(map[string]int, len(cfg.Checks))
+	var visit func(name string) error
+	visit = func(name string) error {
+		color[name] = colorGray
+		for _, dep := range depsByName[name] {
+			switch color[dep] {
+			case colorGray:
+				return fmt.Errorf("dependency cycle detected: %q -> %q", name, dep)
+			case colorWhite:
+				if err := visit(dep); err != nil {
+					return err
+				}
+			}
+		}
+		color[name] = colorBlack
+		return nil
+	}
+	for _, ch := range cfg.Checks {
+		if color[ch.Name] == colorWhite {
+			if err := visit(ch.Name); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 

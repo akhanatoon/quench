@@ -5,6 +5,14 @@ All notable changes to `quench` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-11-26
+
+### Added
+- **JS/TS reverse-importer graph** (`internal/diff/graph_jsts.go`): Scans relative `import`/`export`/`require` specifiers (including TypeScript ESM `.js -> .ts` and barrel `index.*`) to expand affected JS/TS files by 1-hop direct importers.
+- **Check dependency DAG (`depends_on`)**: Topological wave scheduler (`BuildWaves`) runs independent checks in parallel while skipping downstream checks when an upstream dependency fails (`dependency failed: <dep>`), with cycle validation in `config.Validate`.
+- **Git hook manager (`quench hook install|uninstall`)**: Worktree-safe, idempotent `pre-push` / `pre-commit` hook installation with fenced blocks that preserve existing user hook commands.
+- **Built-in benchmark runner (`quench bench`)**: Measures real `min / avg / max` latency across `local`, `memo-cached`, and `docker-warm` modes and outputs JSON or a ready-to-paste Markdown table.
+
 ## [0.4.0] - 2026-11-26
 
 ### Added

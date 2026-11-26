@@ -79,14 +79,22 @@ quench doctor
 # Zero-config diff-aware verification (warm Docker sandbox by default)
 quench run
 
-# Run directly on host without Docker
-quench run --local
+# Run directly on host, suppress pre-existing legacy lint lines outside git diff
+quench run --local --changed-lines-only
 
-# Emit token-lean JSON report against main branch
-quench run --base main --json
+# Emit token-lean JSON, SARIF 2.1.0, or GitHub Actions annotations
+quench run --base main --format json
+quench run --format sarif
+quench run --format github
 
-# Run only specific checks
-quench run --only lint,test --fail-fast
+# Continuous debounced watch mode inside warm sandbox
+quench watch --local
+
+# Install a non-destructive pre-push git hook
+quench hook install pre-push --fail-fast
+
+# Benchmark local vs memo-cached vs warm Docker on your repo
+quench bench --runs 3
 
 # Generate an explicit quench.yaml tailored to your repo
 quench init
