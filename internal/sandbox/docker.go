@@ -841,6 +841,9 @@ func writeWorkspaceTar(projectDir string, w io.Writer) error {
 		if entry.IsDir() && copySkipDirs[entry.Name()] {
 			return filepath.SkipDir
 		}
+		if !entry.IsDir() && shouldSkipCopyFile(entry.Name()) {
+			return nil
+		}
 
 		info, err := entry.Info()
 		if err != nil {
@@ -901,6 +904,24 @@ func writeWorkspaceTar(projectDir string, w io.Writer) error {
 	return err
 }
 
+func shouldSkipCopyFile(name string) bool {
+	lower := strings.ToLower(name)
+	if lower == ".env" || strings.HasPrefix(lower, ".env.") {
+		switch lower {
+		case ".env.example", ".env.sample", ".env.template":
+			return false
+		default:
+			return true
+		}
+	}
+	for _, ext := range []string{".key", ".pem", ".p12", ".pfx"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return lower == "id_rsa" || lower == "id_ed25519"
+}
+
 func workspaceFingerprint(projectDir string) string {
 	h := sha256.New()
 	err := filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -913,6 +934,9 @@ func workspaceFingerprint(projectDir string) string {
 		}
 		if entry.IsDir() && copySkipDirs[entry.Name()] {
 			return filepath.SkipDir
+		}
+		if !entry.IsDir() && shouldSkipCopyFile(entry.Name()) {
+			return nil
 		}
 		info, err := entry.Info()
 		if err != nil {

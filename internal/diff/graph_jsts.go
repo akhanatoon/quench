@@ -55,26 +55,30 @@ var (
 
 // ExpandJSReverseImporters scans JS/TS source files in repoDir, extracts relative
 // import/export/require specifiers, resolves them to on-disk paths, and returns the
-// sorted, deduplicated union of changedFiles plus any 1-hop direct JS/TS importers.
+// sorted, deduplicated transitive closure of changedFiles plus all JS/TS importers.
 func ExpandJSReverseImporters(repoDir string, changedFiles []string) []string {
 	if len(changedFiles) == 0 {
 		return nil
 	}
 
-	changedSet := make(map[string]struct{}, len(changedFiles))
-	resultSet := make(map[string]struct{}, len(changedFiles))
+	var seeds []string
+	seenSeeds := make(map[string]struct{}, len(changedFiles))
 	for _, f := range changedFiles {
 		norm := normalizeRepoRel(f)
 		if norm == "" {
 			continue
 		}
-		changedSet[norm] = struct{}{}
-		resultSet[norm] = struct{}{}
+		if _, ok := seenSeeds[norm]; !ok {
+			seenSeeds[norm] = struct{}{}
+			seeds = append(seeds, norm)
+		}
 	}
-	if len(changedSet) == 0 {
+	if len(seeds) == 0 {
 		return nil
 	}
 
+	// Build reverse adjacency graph: targetRel -> set of importerRel
+	revGraph := make(map[string]map[string]struct{})
 	_ = filepath.WalkDir(repoDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -101,9 +105,6 @@ func ExpandJSReverseImporters(repoDir string, changedFiles []string) []string {
 		if importerRel == "" {
 			return nil
 		}
-		if _, already := resultSet[importerRel]; already {
-			return nil
-		}
 
 		data, readErr := os.ReadFile(p)
 		if readErr != nil {
@@ -113,16 +114,34 @@ func ExpandJSReverseImporters(repoDir string, changedFiles []string) []string {
 		importerDir := path.Dir(importerRel)
 		for _, spec := range extractJSRelativeSpecifiers(string(data)) {
 			target := resolveJSSpecifier(repoDir, importerDir, spec)
-			if target == "" {
+			if target == "" || target == importerRel {
 				continue
 			}
-			if _, hit := changedSet[target]; hit {
-				resultSet[importerRel] = struct{}{}
-				break
+			if revGraph[target] == nil {
+				revGraph[target] = make(map[string]struct{})
 			}
+			revGraph[target][importerRel] = struct{}{}
 		}
 		return nil
 	})
+
+	// Transitive BFS closure (cycle-safe)
+	resultSet := make(map[string]struct{}, len(seeds))
+	queue := make([]string, 0, len(seeds))
+	for _, s := range seeds {
+		resultSet[s] = struct{}{}
+		queue = append(queue, s)
+	}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for importer := range revGraph[cur] {
+			if _, visited := resultSet[importer]; !visited {
+				resultSet[importer] = struct{}{}
+				queue = append(queue, importer)
+			}
+		}
+	}
 
 	out := make([]string, 0, len(resultSet))
 	for f := range resultSet {

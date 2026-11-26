@@ -31,7 +31,7 @@ module.exports = { add };`)
   add,
 } from '../math';
 export const View = () => add(1, 2);`)
-	// 2-hop importer should NOT be included
+	// 2-hop importer IS now included via transitive BFS
 	writeTestFile(t, dir, "src/app.ts", `import { double } from './calc';
 console.log(double(2));`)
 	// Unrelated file should NOT be included
@@ -40,6 +40,7 @@ export const x = 1;`)
 
 	got := ExpandJSReverseImporters(dir, []string{"src/math.ts"})
 	want := []string{
+		"src/app.ts",
 		"src/calc.ts",
 		"src/legacy.cjs",
 		"src/math.ts",

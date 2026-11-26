@@ -48,6 +48,13 @@ func FormatGitHub(r *RunReport) string {
 		}
 	}
 
+	if len(lines) == 0 && r.Status == StatusPassedWithFiltered {
+		totalFiltered := 0
+		for _, ch := range r.Checks {
+			totalFiltered += ch.FilteredOut
+		}
+		return fmt.Sprintf("::warning title=quench::Checks passed in %dms (%d legacy lint issues outside git diff filtered)", r.DurationMs, totalFiltered)
+	}
 	if len(lines) == 0 && r.Status != StatusFailed {
 		return fmt.Sprintf("::notice title=quench::All checks passed in %dms", r.DurationMs)
 	}

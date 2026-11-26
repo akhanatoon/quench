@@ -5,9 +5,10 @@ import "github.com/akhanatoon/quench/internal/parser"
 type Failure = parser.Failure
 
 const (
-	StatusPassed  = "passed"
-	StatusFailed  = "failed"
-	StatusSkipped = "skipped"
+	StatusPassed             = "passed"
+	StatusPassedWithFiltered = "passed_with_filtered"
+	StatusFailed             = "failed"
+	StatusSkipped            = "skipped"
 )
 
 type CheckResult struct {

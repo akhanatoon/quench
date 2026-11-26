@@ -56,7 +56,11 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 		for i, ch := range selected {
 			checkSpecs[i] = ch.Name + "|" + ch.Command + "|" + ch.Image + "|" + ch.WorkingDir
 		}
-		memoKey = ComputeMemoKeyWithEnv(absDir, sb.ModeName(), opts.BaseRef, opts.OnlyChecks, opts.FailFast, opts.ChangedLinesOnly, changed, deleted, checkSpecs)
+		memoKey = ComputeMemoKeyWithEnv(
+			absDir, sb.ModeName(), opts.BaseRef, opts.OnlyChecks, opts.FailFast, opts.ChangedLinesOnly,
+			changed, deleted, checkSpecs,
+			DetectToolchainFingerprint(ctx, sb.ModeName(), cfg.Sandbox.Image, cfg.Stack),
+		)
 		if cachedRep, hit := LoadMemo(memoKey, 15*time.Minute); hit {
 			cachedRep.Cached = true
 			cachedRep.DurationMs = time.Since(started).Milliseconds()
@@ -266,12 +270,12 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 						if len(failures) == 0 && filteredOut > 0 {
 							results[plan.index] = CheckResult{
 								Name:        plan.cfg.Name,
-								Status:      StatusPassed,
+								Status:      StatusPassedWithFiltered,
 								WorkingDir:  plan.resolved.WorkingDir,
 								DurationMs:  dur,
 								FilteredOut: filteredOut,
 							}
-							setStatus(StatusPassed)
+							setStatus(StatusPassedWithFiltered)
 							return
 						}
 					}
@@ -305,10 +309,14 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 
 	var summary Summary
 	summary.TotalChecks = len(results)
+	anyFiltered := false
 	for _, r := range results {
 		switch r.Status {
 		case StatusPassed:
 			summary.Passed++
+		case StatusPassedWithFiltered:
+			summary.Passed++
+			anyFiltered = true
 		case StatusFailed:
 			summary.Failed++
 		case StatusSkipped:
@@ -319,6 +327,8 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 	overallStatus := StatusPassed
 	if summary.Failed > 0 {
 		overallStatus = StatusFailed
+	} else if anyFiltered {
+		overallStatus = StatusPassedWithFiltered
 	}
 
 	report := &RunReport{

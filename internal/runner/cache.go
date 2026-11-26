@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +10,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -16,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/akhanatoon/quench/internal/config"
 )
 
 const (
@@ -59,8 +64,67 @@ func ComputeMemoKey(
 	)
 }
 
+var toolchainFPCache sync.Map
+
+// DetectToolchainFingerprint returns the real Docker image digest (in Docker mode)
+// or the active host runtime version string (in local mode), cached in-memory per process.
+func DetectToolchainFingerprint(ctx context.Context, mode string, image string, stack config.StackType) string {
+	cacheKey := mode + "|" + image + "|" + string(stack)
+	if v, ok := toolchainFPCache.Load(cacheKey); ok {
+		return v.(string)
+	}
+
+	var fp string
+	if strings.HasPrefix(mode, "docker") && image != "" {
+		if out := quickCmdOutput(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", image); out != "" {
+			fp = "docker-image:" + out
+		} else {
+			fp = "docker-image-name:" + image
+		}
+	} else {
+		var parts []string
+		probe := func(name string, args ...string) {
+			if out := quickCmdOutput(ctx, name, args...); out != "" {
+				parts = append(parts, name+"="+out)
+			}
+		}
+		switch stack {
+		case config.StackGo:
+			probe("go", "version")
+		case config.StackNode:
+			probe("node", "--version")
+		case config.StackPython:
+			probe("python", "--version")
+		case config.StackRust:
+			probe("rustc", "--version")
+		default:
+			probe("go", "version")
+			probe("node", "--version")
+			probe("python", "--version")
+			probe("rustc", "--version")
+		}
+		fp = strings.Join(parts, ";")
+	}
+
+	toolchainFPCache.Store(cacheKey, fp)
+	return fp
+}
+
+func quickCmdOutput(ctx context.Context, name string, args ...string) string {
+	tctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(tctx, name, args...)
+	cmd.WaitDelay = 500 * time.Millisecond
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out.String())
+}
+
 // ComputeMemoKeyWithEnv computes a deterministic SHA256 hex key incorporating all run options,
-// toolchain environment variables, runtime version, deleted files, check specifications
+// toolchain environment variables, runtime/toolchain fingerprint, deleted files, check specifications
 // (name + command + image + working_dir), changed file content hashes, and quench.yaml if present.
 func ComputeMemoKeyWithEnv(
 	projectDir string,
@@ -72,6 +136,7 @@ func ComputeMemoKeyWithEnv(
 	changedFiles []string,
 	deletedFiles []string,
 	checkSpecs []string,
+	extra ...string,
 ) string {
 	h := sha256.New()
 
@@ -135,6 +200,11 @@ func ComputeMemoKeyWithEnv(
 	normSpecs = slices.Compact(normSpecs)
 	for _, spec := range normSpecs {
 		writeField(h, "checkSpec", spec)
+	}
+	for _, ex := range extra {
+		if ex != "" {
+			writeField(h, "extra", ex)
+		}
 	}
 
 	return hex.EncodeToString(h.Sum(nil))

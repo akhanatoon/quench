@@ -124,11 +124,9 @@ func printHumanReport(cmd *cobra.Command, r *runner.RunReport) {
 	for _, ch := range r.Checks {
 		switch ch.Status {
 		case runner.StatusPassed:
-			if ch.FilteredOut > 0 {
-				fmt.Fprintf(out, "  [PASS] %-12s (%dms, %d legacy lint issues outside diff filtered)\n", ch.Name, ch.DurationMs, ch.FilteredOut)
-			} else {
-				fmt.Fprintf(out, "  [PASS] %-12s (%dms)\n", ch.Name, ch.DurationMs)
-			}
+			fmt.Fprintf(out, "  [PASS] %-12s (%dms)\n", ch.Name, ch.DurationMs)
+		case runner.StatusPassedWithFiltered:
+			fmt.Fprintf(out, "  [PASS*] %-11s (%dms, %d legacy lint issues outside diff filtered)\n", ch.Name, ch.DurationMs, ch.FilteredOut)
 		case runner.StatusSkipped:
 			fmt.Fprintf(out, "  [SKIP] %-12s (%s)\n", ch.Name, ch.SkipReason)
 		case runner.StatusFailed:
