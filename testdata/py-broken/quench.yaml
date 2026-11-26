@@ -1,0 +1,14 @@
+version: 1
+mode: local
+stack: python
+checks:
+  - name: lint
+    command: "python scripts/sim_checks.py lint {{files}}"
+    scope: changed_files
+    parser: ruff
+    extensions: [".py"]
+  - name: test
+    command: "python scripts/sim_checks.py pytest {{tests}}"
+    scope: mapped_tests
+    parser: pytest
+    extensions: [".py"]

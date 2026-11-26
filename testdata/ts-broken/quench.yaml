@@ -1,0 +1,9 @@
+version: 1
+mode: local
+stack: node
+checks:
+  - name: typecheck
+    command: "node scripts/check_tsc.mjs"
+    scope: project
+    parser: tsc
+    extensions: [".ts"]

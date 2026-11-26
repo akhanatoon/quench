@@ -1,0 +1,8 @@
+# Root binaries & release artifacts
+/quench
+/quench.exe
+/dist/
+
+# Coverage & test artifacts
+*.out
+coverage.txt
