@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	Version = "0.3.0"
+	Version = "0.4.0"
 	flagDir string
 )
 
@@ -26,6 +26,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(
 		newInitCmd(),
 		newRunCmd(),
+		newWatchCmd(),
 		newWarmCmd(),
 		newMCPCmd(),
 		newDoctorCmd(),

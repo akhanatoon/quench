@@ -19,10 +19,12 @@ import (
 )
 
 type Options struct {
-	ProjectDir string
-	BaseRef    string
-	OnlyChecks []string
-	FailFast   bool
+	ProjectDir       string
+	BaseRef          string
+	OnlyChecks       []string
+	FailFast         bool
+	ChangedLinesOnly bool
+	NoCache          bool
 }
 
 // Run executes diff-aware checks against sb in parallel while preserving configured check order.
@@ -39,6 +41,21 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 	}
 	if changed == nil {
 		changed = []string{}
+	}
+
+	var memoKey string
+	if !opts.NoCache {
+		memoKey = ComputeMemoKey(absDir, sb.ModeName(), opts.BaseRef, opts.OnlyChecks, opts.FailFast, opts.ChangedLinesOnly, changed)
+		if cachedRep, hit := LoadMemo(memoKey, 15*time.Minute); hit {
+			cachedRep.Cached = true
+			cachedRep.DurationMs = time.Since(started).Milliseconds()
+			return cachedRep, nil
+		}
+	}
+
+	var hunkRanges map[string][]diff.LineRange
+	if opts.ChangedLinesOnly && len(changed) > 0 {
+		hunkRanges, _ = diff.ChangedLineRanges(ctx, absDir, opts.BaseRef)
 	}
 
 	selected := filterChecks(cfg.Checks, opts.OnlyChecks)
@@ -165,6 +182,33 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 					parseRoot = filepath.Join(absDir, filepath.FromSlash(plan.resolved.WorkingDir))
 				}
 				failures, truncated := parser.Parse(plan.cfg.Parser, plan.resolved.Command, parseRoot, execRes.Combined)
+				filteredOut := 0
+				if opts.ChangedLinesOnly && len(hunkRanges) > 0 && len(failures) > 0 {
+					var kept []Failure
+					for _, f := range failures {
+						repoRel := f.File
+						if plan.resolved.WorkingDir != "" && repoRel != "" && !strings.HasPrefix(repoRel, plan.resolved.WorkingDir+"/") {
+							repoRel = plan.resolved.WorkingDir + "/" + repoRel
+						}
+						// Always keep test failures; only suppress pre-existing non-diff linter/typecheck noise
+						if diff.IsTestFile(repoRel) || diff.LineInDiff(hunkRanges, repoRel, f.Line) {
+							kept = append(kept, f)
+						} else {
+							filteredOut++
+						}
+					}
+					failures = kept
+					if len(failures) == 0 && filteredOut > 0 {
+						results[plan.index] = CheckResult{
+							Name:        plan.cfg.Name,
+							Status:      StatusPassed,
+							WorkingDir:  plan.resolved.WorkingDir,
+							DurationMs:  dur,
+							FilteredOut: filteredOut,
+						}
+						return
+					}
+				}
 				if len(failures) == 0 {
 					failures = []Failure{
 						{
@@ -179,6 +223,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 					WorkingDir:     plan.resolved.WorkingDir,
 					DurationMs:     dur,
 					Command:        plan.resolved.Command,
+					FilteredOut:    filteredOut,
 					TruncatedCount: truncated,
 					Failures:       failures,
 				}
@@ -233,6 +278,10 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 			ReportBytes:  repBytes,
 			ReductionPct: pct,
 		}
+	}
+
+	if !opts.NoCache && memoKey != "" && anyActive {
+		SaveMemo(memoKey, report)
 	}
 
 	return report, nil

@@ -197,11 +197,13 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 	switch p.Name {
 	case "verify_changes":
 		var args struct {
-			ProjectDir string   `json:"project_dir"`
-			BaseRef    string   `json:"base_ref"`
-			Checks     []string `json:"checks"`
-			Mode       string   `json:"mode"`
-			FailFast   bool     `json:"fail_fast"`
+			ProjectDir       string   `json:"project_dir"`
+			BaseRef          string   `json:"base_ref"`
+			Checks           []string `json:"checks"`
+			Mode             string   `json:"mode"`
+			FailFast         bool     `json:"fail_fast"`
+			ChangedLinesOnly bool     `json:"changed_lines_only"`
+			NoCache          bool     `json:"no_cache"`
 		}
 		if len(p.Arguments) > 0 {
 			if err := json.Unmarshal(p.Arguments, &args); err != nil {
@@ -241,10 +243,12 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 		}
 
 		report, err := runner.Run(ctx, cfg, sb, runner.Options{
-			ProjectDir: projDir,
-			BaseRef:    args.BaseRef,
-			OnlyChecks: args.Checks,
-			FailFast:   args.FailFast,
+			ProjectDir:       projDir,
+			BaseRef:          args.BaseRef,
+			OnlyChecks:       args.Checks,
+			FailFast:         args.FailFast,
+			ChangedLinesOnly: args.ChangedLinesOnly,
+			NoCache:          args.NoCache,
 		})
 		if err != nil {
 			var daemonErr *sandbox.DaemonUnavailableError
@@ -379,6 +383,14 @@ func toolDefinitions() []map[string]any {
 					"fail_fast": map[string]any{
 						"type":        "boolean",
 						"description": "Cancel remaining checks immediately on the first failure.",
+					},
+					"changed_lines_only": map[string]any{
+						"type":        "boolean",
+						"description": "Filter non-test linter/typecheck diagnostics to lines modified in git diff.",
+					},
+					"no_cache": map[string]any{
+						"type":        "boolean",
+						"description": "Bypass memoization cache and force re-execution.",
 					},
 				},
 			},

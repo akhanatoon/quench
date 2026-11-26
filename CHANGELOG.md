@@ -5,6 +5,14 @@ All notable changes to `quench` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-26
+
+### Added
+- **Watch mode (`quench watch`)**: Zero-dependency debounced file watcher that re-runs diff-aware checks inside the warm sandbox on every save.
+- **Diff-line hunk filtering (`--changed-lines-only` / MCP `changed_lines_only`)**: Parses `git diff -U0` line ranges to suppress pre-existing legacy linter noise on untouched lines while always preserving test failures.
+- **SARIF 2.1.0 & GitHub Actions reporters (`--format sarif|github`)**: Native `::error` workflow annotations and SARIF 2.1.0 output for GitHub Code Scanning and IDE Problems panels.
+- **Result memoization cache (`--no-cache` to bypass)**: Content-hashed report cache returning unchanged verification results in `<15ms` (`cached: true`).
+
 ## [0.3.0] - 2026-11-26
 
 ### Added
@@ -16,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Python & Node setup hardening**: Improved dependency sync reliability and container setup defaults for Python and Node warm sandboxes.
 
-## [0.2.0] - 2026-04-06
+## [0.2.0] - 2026-11-26
 
 ### Added
 - **Monorepo & polyglot `working_dir` isolation**: Auto-detects root and nested workspaces (`apps/*`, `services/*`, `packages/*`, `backend/`, `frontend/`, `web/`, `api/`, `src-tauri/`) and scopes checks per workspace.
@@ -25,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Output compression telemetry**: Reports `output_stats` (`raw_bytes`, `report_bytes`, `reduction_pct`) on verification runs.
 - **Onboarding & diagnostics CLI**: Added `quench doctor` and `quench mcp install --client claude|codex|cursor|opencode`.
 
-## [0.1.0] - 2026-04-05
+## [0.1.0] - 2026-11-26
 
 ### Added
 - Initial `quench` single-binary Go CLI (`init`, `run`, `warm`, `mcp`).

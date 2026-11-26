@@ -14,11 +14,14 @@ import (
 
 func newRunCmd() *cobra.Command {
 	var (
-		baseRef    string
-		jsonOut    bool
-		forceLocal bool
-		onlyChecks []string
-		failFast   bool
+		baseRef          string
+		jsonOut          bool
+		format           string
+		forceLocal       bool
+		onlyChecks       []string
+		failFast         bool
+		changedLinesOnly bool
+		noCache          bool
 	)
 
 	cmd := &cobra.Command{
@@ -48,23 +51,40 @@ func newRunCmd() *cobra.Command {
 			}
 
 			report, err := runner.Run(context.Background(), cfg, sb, runner.Options{
-				ProjectDir: projectDir,
-				BaseRef:    baseRef,
-				OnlyChecks: onlyChecks,
-				FailFast:   failFast,
+				ProjectDir:       projectDir,
+				BaseRef:          baseRef,
+				OnlyChecks:       onlyChecks,
+				FailFast:         failFast,
+				ChangedLinesOnly: changedLinesOnly,
+				NoCache:          noCache,
 			})
 			if err != nil {
 				return err
 			}
 
+			outFmt := strings.ToLower(strings.TrimSpace(format))
 			if jsonOut {
+				outFmt = "json"
+			}
+			switch outFmt {
+			case "json":
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
 				if encErr := enc.Encode(report); encErr != nil {
 					return encErr
 				}
-			} else {
+			case "sarif":
+				sarifBytes, sErr := runner.FormatSARIF(report)
+				if sErr != nil {
+					return sErr
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), string(sarifBytes))
+			case "github":
+				fmt.Fprintln(cmd.OutOrStdout(), runner.FormatGitHub(report))
+			case "", "text":
 				printHumanReport(cmd, report)
+			default:
+				return fmt.Errorf("unsupported --format %q (expected text, json, sarif, or github)", format)
 			}
 
 			if report.Status == runner.StatusFailed {
@@ -75,10 +95,13 @@ func newRunCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&baseRef, "base", "", "Compare against git base ref (e.g. main, HEAD~1)")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit token-lean JSON report")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit token-lean JSON report (shorthand for --format json)")
+	cmd.Flags().StringVar(&format, "format", "text", "Output format: text, json, sarif, or github")
 	cmd.Flags().BoolVar(&forceLocal, "local", false, "Run checks directly on host instead of Docker sandbox")
 	cmd.Flags().StringSliceVar(&onlyChecks, "only", nil, "Comma-separated check names to run (e.g. lint,test)")
 	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Cancel remaining checks on first failure")
+	cmd.Flags().BoolVar(&changedLinesOnly, "changed-lines-only", false, "Suppress non-test diagnostics on lines untouched by git diff")
+	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Bypass result memoization cache")
 
 	return cmd
 }
@@ -86,8 +109,11 @@ func newRunCmd() *cobra.Command {
 func printHumanReport(cmd *cobra.Command, r *runner.RunReport) {
 	out := cmd.OutOrStdout()
 	extra := ""
+	if r.Cached {
+		extra += " | cached"
+	}
 	if r.OutputStats != nil && r.OutputStats.ReductionPct > 0 {
-		extra = fmt.Sprintf(" | %.1f%% log reduction", r.OutputStats.ReductionPct)
+		extra += fmt.Sprintf(" | %.1f%% log reduction", r.OutputStats.ReductionPct)
 	}
 	fmt.Fprintf(out, "quench [%s] — %s in %dms (%d changed files%s)\n",
 		r.Mode, strings.ToUpper(r.Status), r.DurationMs, len(r.ChangedFiles), extra)

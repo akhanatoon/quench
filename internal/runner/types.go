@@ -17,6 +17,7 @@ type CheckResult struct {
 	DurationMs     int64     `json:"duration_ms"`
 	Command        string    `json:"command,omitempty"`
 	SkipReason     string    `json:"skip_reason,omitempty"`
+	FilteredOut    int       `json:"filtered_out,omitempty"`
 	TruncatedCount int       `json:"truncated_count,omitempty"`
 	Failures       []Failure `json:"failures,omitempty"`
 }
@@ -37,6 +38,7 @@ type OutputStats struct {
 type RunReport struct {
 	Status             string        `json:"status"`
 	Mode               string        `json:"mode"`
+	Cached             bool          `json:"cached,omitempty"`
 	ProjectDir         string        `json:"project_dir"`
 	DurationMs         int64         `json:"duration_ms"`
 	FullSuiteTriggered bool          `json:"full_suite_triggered,omitempty"`
