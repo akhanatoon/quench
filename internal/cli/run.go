@@ -22,6 +22,8 @@ func newRunCmd() *cobra.Command {
 		failFast         bool
 		changedLinesOnly bool
 		noCache          bool
+		fix              bool
+		compact          bool
 	)
 
 	cmd := &cobra.Command{
@@ -58,6 +60,8 @@ func newRunCmd() *cobra.Command {
 				FailFast:         failFast,
 				ChangedLinesOnly: changedLinesOnly,
 				NoCache:          noCache,
+				Fix:              fix,
+				Compact:          compact,
 			})
 			if err != nil {
 				return err
@@ -103,6 +107,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Cancel remaining checks on first failure")
 	cmd.Flags().BoolVar(&changedLinesOnly, "changed-lines-only", false, "Suppress non-test diagnostics on lines untouched by git diff")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Bypass result memoization cache")
+	cmd.Flags().BoolVar(&fix, "fix", false, "Run configured auto-fix commands before verification")
+	cmd.Flags().BoolVar(&compact, "compact", false, "Omit skipped checks from report output")
 
 	return cmd
 }
@@ -121,16 +127,22 @@ func printHumanReport(cmd *cobra.Command, r *runner.RunReport) {
 	if r.FullSuiteTriggered && r.ScopeReason != "" {
 		fmt.Fprintf(out, "  note: full suite triggered (%s)\n", r.ScopeReason)
 	}
+	shownSkipped := 0
 	for _, ch := range r.Checks {
+		fixTag := ""
+		if ch.Fixed {
+			fixTag = " (fixed)"
+		}
 		switch ch.Status {
 		case runner.StatusPassed:
-			fmt.Fprintf(out, "  [PASS] %-12s (%dms)\n", ch.Name, ch.DurationMs)
+			fmt.Fprintf(out, "  [PASS] %-12s (%dms)%s\n", ch.Name, ch.DurationMs, fixTag)
 		case runner.StatusPassedWithFiltered:
-			fmt.Fprintf(out, "  [PASS*] %-11s (%dms, %d legacy lint issues outside diff filtered)\n", ch.Name, ch.DurationMs, ch.FilteredOut)
+			fmt.Fprintf(out, "  [PASS*] %-11s (%dms, %d legacy lint issues outside diff filtered)%s\n", ch.Name, ch.DurationMs, ch.FilteredOut, fixTag)
 		case runner.StatusSkipped:
+			shownSkipped++
 			fmt.Fprintf(out, "  [SKIP] %-12s (%s)\n", ch.Name, ch.SkipReason)
 		case runner.StatusFailed:
-			fmt.Fprintf(out, "  [FAIL] %-12s (%dms)\n", ch.Name, ch.DurationMs)
+			fmt.Fprintf(out, "  [FAIL] %-12s (%dms)%s\n", ch.Name, ch.DurationMs, fixTag)
 			for _, f := range ch.Failures {
 				loc := f.File
 				if loc != "" && f.Line > 0 {
@@ -148,5 +160,8 @@ func printHumanReport(cmd *cobra.Command, r *runner.RunReport) {
 				fmt.Fprintf(out, "         … +%d more failures truncated\n", ch.TruncatedCount)
 			}
 		}
+	}
+	if omitted := r.Summary.Skipped - shownSkipped; omitted > 0 {
+		fmt.Fprintf(out, "  (%d skipped checks omitted; use without --compact to show)\n", omitted)
 	}
 }

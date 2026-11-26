@@ -320,3 +320,134 @@ func TestRemoteCopyTarSkipsBuildDirsAndPreservesCachePaths(t *testing.T) {
 		t.Fatalf("expected clean command to extract tar into /workspace, got: %s", cleanCmd)
 	}
 }
+
+func TestWriteWorkspaceTarSecretAndCopyExclude(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"main.go":              "package main\n",
+		".env":                 "SECRET=1\n",
+		".env.local":           "SECRET=2\n",
+		".env.example":         "SECRET=placeholder\n",
+		"server.key":           "PRIVATE KEY\n",
+		"certs/client.pem":     "CERT\n",
+		"data/dev.sqlite":      "sqlite-bytes",
+		"fixtures/sample.json": `{"ok":true}`,
+		"fixtures/sub/a.txt":   "nested fixture",
+		"src/app.go":           "package src\n",
+	}
+	for rel, content := range files {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	excludes := []string{"*.sqlite", "fixtures/*"}
+	var buf bytes.Buffer
+	if err := writeWorkspaceTar(dir, &buf, excludes...); err != nil {
+		t.Fatalf("writeWorkspaceTar failed: %v", err)
+	}
+
+	tr := tar.NewReader(&buf)
+	found := make(map[string]bool)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar read error: %v", err)
+		}
+		found[hdr.Name] = true
+	}
+
+	// Must be included
+	for _, want := range []string{"main.go", ".env.example", "src/app.go"} {
+		if !found[want] {
+			t.Errorf("expected %q to be included in tar archive, got: %+v", want, found)
+		}
+	}
+
+	// Must be excluded (built-in secrets + custom copy_exclude)
+	for _, forbidden := range []string{
+		".env",
+		".env.local",
+		"server.key",
+		"certs/client.pem",
+		"data/dev.sqlite",
+		"fixtures/sample.json",
+		"fixtures/sub/a.txt",
+	} {
+		if found[forbidden] {
+			t.Errorf("expected %q to be excluded from tar archive", forbidden)
+		}
+	}
+
+	// Fingerprint must ignore excluded files: modifying an excluded file must not change fingerprint
+	fpBefore := workspaceFingerprint(dir, excludes...)
+	if err := os.WriteFile(filepath.Join(dir, "data", "dev.sqlite"), []byte("modified-sqlite-bytes-longer"), 0o644); err != nil {
+		t.Fatalf("update excluded file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env.local"), []byte("SECRET=changed-value"), 0o644); err != nil {
+		t.Fatalf("update secret file: %v", err)
+	}
+	fpAfterExcluded := workspaceFingerprint(dir, excludes...)
+	if fpBefore == "" || fpBefore != fpAfterExcluded {
+		t.Fatalf("expected fingerprint to stay unchanged when excluded files change: %q vs %q", fpBefore, fpAfterExcluded)
+	}
+
+	// Modifying an included file MUST change fingerprint
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n// updated\n"), 0o644); err != nil {
+		t.Fatalf("update included file: %v", err)
+	}
+	fpAfterIncluded := workspaceFingerprint(dir, excludes...)
+	if fpAfterIncluded == fpBefore {
+		t.Fatalf("expected fingerprint to change when included file changes: %q", fpAfterIncluded)
+	}
+}
+
+func TestStatusInfoFromInspect(t *testing.T) {
+	item := inspectData{
+		ID:   "0123456789abcdef99999999",
+		Name: "/quench-warm-abcd1234",
+	}
+	item.Config.Image = "golang:1.24-alpine"
+	item.Config.Labels = map[string]string{
+		"quench.project_dir": "/repo/app",
+		"quench.stack":       "go",
+	}
+	item.State.Running = true
+	item.State.StartedAt = "2026-01-01T00:00:00Z"
+
+	st := statusInfoFromInspect(item, "fallback")
+	if st.ContainerName != "quench-warm-abcd1234" {
+		t.Errorf("ContainerName = %q, want quench-warm-abcd1234", st.ContainerName)
+	}
+	if st.ContainerID != "0123456789ab" {
+		t.Errorf("ContainerID = %q, want 0123456789ab", st.ContainerID)
+	}
+	if st.Image != "golang:1.24-alpine" {
+		t.Errorf("Image = %q, want golang:1.24-alpine", st.Image)
+	}
+	if st.State != "running" {
+		t.Errorf("State = %q, want running", st.State)
+	}
+	if st.ProjectDir != "/repo/app" {
+		t.Errorf("ProjectDir = %q, want /repo/app", st.ProjectDir)
+	}
+	if st.Stack != "go" {
+		t.Errorf("Stack = %q, want go", st.Stack)
+	}
+	if st.Uptime == "" {
+		t.Errorf("expected non-empty Uptime for running container")
+	}
+
+	item.State.Running = false
+	stopped := statusInfoFromInspect(item, "fallback")
+	if stopped.State != "stopped" || stopped.Uptime != "" {
+		t.Errorf("expected stopped state with empty uptime, got state=%q uptime=%q", stopped.State, stopped.Uptime)
+	}
+}

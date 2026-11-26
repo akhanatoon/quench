@@ -25,6 +25,8 @@ type Options struct {
 	FailFast         bool
 	ChangedLinesOnly bool
 	NoCache          bool
+	Fix              bool
+	Compact          bool
 }
 
 // Run executes diff-aware checks against sb in parallel while preserving configured check order.
@@ -51,7 +53,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 	}
 
 	var memoKey string
-	if !opts.NoCache {
+	if !opts.NoCache && !opts.Fix {
 		checkSpecs := make([]string, len(selected))
 		for i, ch := range selected {
 			checkSpecs[i] = ch.Name + "|" + ch.Command + "|" + ch.Image + "|" + ch.WorkingDir
@@ -64,6 +66,9 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 		if cachedRep, hit := LoadMemo(memoKey, 15*time.Minute); hit {
 			cachedRep.Cached = true
 			cachedRep.DurationMs = time.Since(started).Milliseconds()
+			if opts.Compact {
+				cachedRep.Checks = compactChecks(cachedRep.Checks)
+			}
 			return cachedRep, nil
 		}
 	}
@@ -176,6 +181,27 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 						defer func() { <-sem }()
 					}
 					cStart := time.Now()
+					fixed := false
+					if opts.Fix && plan.cfg.FixCommand != "" {
+						fixCfg := plan.cfg
+						fixCfg.Command = plan.cfg.FixCommand
+						fixRes := diff.ResolveWithDeleted(absDir, cfg.Stack, fixCfg, changed, deleted)
+						if !fixRes.Skip {
+							var (
+								fixExecRes sandbox.ExecResult
+								fixErr     error
+							)
+							if imgSB, ok := sb.(sandbox.ImageAwareSandbox); ok && plan.cfg.Image != "" {
+								fixExecRes, fixErr = imgSB.ExecWithImage(runCtx, fixRes.WorkingDir, plan.cfg.Image, fixRes.Command, plan.cfg.ParsedTimeout())
+							} else {
+								fixExecRes, fixErr = sb.Exec(runCtx, fixRes.WorkingDir, fixRes.Command, plan.cfg.ParsedTimeout())
+							}
+							totalRawBytes.Add(int64(len(fixExecRes.Combined)))
+							if fixErr == nil && !fixExecRes.TimedOut {
+								fixed = true
+							}
+						}
+					}
 					var (
 						execRes sandbox.ExecResult
 						execErr error
@@ -198,6 +224,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 						results[plan.index] = CheckResult{
 							Name:       plan.cfg.Name,
 							Status:     StatusFailed,
+							Fixed:      fixed,
 							WorkingDir: plan.resolved.WorkingDir,
 							DurationMs: dur,
 							Command:    plan.resolved.Command,
@@ -219,6 +246,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 						results[plan.index] = CheckResult{
 							Name:       plan.cfg.Name,
 							Status:     StatusFailed,
+							Fixed:      fixed,
 							WorkingDir: plan.resolved.WorkingDir,
 							DurationMs: dur,
 							Command:    plan.resolved.Command,
@@ -240,6 +268,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 						results[plan.index] = CheckResult{
 							Name:       plan.cfg.Name,
 							Status:     StatusPassed,
+							Fixed:      fixed,
 							WorkingDir: plan.resolved.WorkingDir,
 							DurationMs: dur,
 						}
@@ -280,6 +309,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 							results[plan.index] = CheckResult{
 								Name:        plan.cfg.Name,
 								Status:      StatusPassedWithFiltered,
+								Fixed:       fixed,
 								WorkingDir:  plan.resolved.WorkingDir,
 								DurationMs:  dur,
 								FilteredOut: filteredOut,
@@ -299,6 +329,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 					results[plan.index] = CheckResult{
 						Name:           plan.cfg.Name,
 						Status:         StatusFailed,
+						Fixed:          fixed,
 						WorkingDir:     plan.resolved.WorkingDir,
 						DurationMs:     dur,
 						Command:        plan.resolved.Command,
@@ -340,6 +371,11 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 		overallStatus = StatusPassedWithFiltered
 	}
 
+	reportChecks := results
+	if opts.Compact {
+		reportChecks = compactChecks(results)
+	}
+
 	report := &RunReport{
 		Status:             overallStatus,
 		Mode:               sb.ModeName(),
@@ -350,7 +386,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 		ChangedFiles:       changed,
 		DeletedFiles:       deleted,
 		Summary:            summary,
-		Checks:             results,
+		Checks:             reportChecks,
 	}
 
 	rawBytes := int(totalRawBytes.Load())
@@ -368,11 +404,23 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 		}
 	}
 
-	if !opts.NoCache && memoKey != "" && anyActive {
-		SaveMemo(memoKey, report)
+	if !opts.NoCache && !opts.Fix && memoKey != "" && anyActive {
+		memoReport := *report
+		memoReport.Checks = results
+		SaveMemo(memoKey, &memoReport)
 	}
 
 	return report, nil
+}
+
+func compactChecks(checks []CheckResult) []CheckResult {
+	out := make([]CheckResult, 0, len(checks))
+	for _, ch := range checks {
+		if ch.Status != StatusSkipped {
+			out = append(out, ch)
+		}
+	}
+	return out
 }
 
 func filterChecks(all []config.CheckConfig, only []string) []config.CheckConfig {

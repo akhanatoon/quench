@@ -182,3 +182,182 @@ func TestEndToEndPythonBrokenAndFix(t *testing.T) {
 		t.Fatalf("expected both python checks to pass after fix, got: %+v", repPass)
 	}
 }
+
+func TestRunFixCommandBeforeVerify(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/fixdemo\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unformatted := "package fixdemo\n\nfunc Hello() string {return \"hi\"}\n"
+	if err := os.WriteFile(filepath.Join(repo, "hello.go"), []byte(unformatted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testSrc := `package fixdemo
+
+import (
+	"bytes"
+	"go/format"
+	"os"
+	"testing"
+)
+
+func TestFormatted(t *testing.T) {
+	raw, err := os.ReadFile("hello.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := format.Source(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, want) {
+		t.Fatalf("hello.go is not gofmt-formatted")
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(repo, "hello_test.go"), []byte(testSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitInitCommit(t, repo)
+
+	// Modify hello.go (still unformatted) so git diff picks it up.
+	unformattedModified := "package fixdemo\n\nfunc Hello() string {return \"hello\"}\n"
+	if err := os.WriteFile(filepath.Join(repo, "hello.go"), []byte(unformattedModified), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		Version: 1,
+		Mode:    config.ModeLocal,
+		Stack:   config.StackGo,
+		Checks: []config.CheckConfig{
+			{
+				Name:       "fmtcheck",
+				Command:    "go test -json {{packages}}",
+				FixCommand: "gofmt -w {{files}}",
+				Scope:      config.ScopeChangedPackages,
+				Stack:      config.StackGo,
+				Parser:     "go-test",
+				Timeout:    "60s",
+				Extensions: []string{".go"},
+			},
+		},
+	}
+	sb := sandbox.NewLocal(repo, cfg.Stack)
+
+	// Without --fix: verification fails and Fixed is false.
+	repFail, err := runner.Run(context.Background(), cfg, sb, runner.Options{
+		ProjectDir: repo,
+	})
+	if err != nil {
+		t.Fatalf("runner.Run (no fix): %v", err)
+	}
+	if repFail.Status != runner.StatusFailed || len(repFail.Checks) != 1 || repFail.Checks[0].Fixed {
+		t.Fatalf("expected failed non-fixed check, got: %+v", repFail)
+	}
+
+	// With --fix: bypasses memo cache, runs gofmt -w before verify, and passes with Fixed: true.
+	repFix, err := runner.Run(context.Background(), cfg, sb, runner.Options{
+		ProjectDir: repo,
+		Fix:        true,
+	})
+	if err != nil {
+		t.Fatalf("runner.Run (fix): %v", err)
+	}
+	if repFix.Cached {
+		t.Fatalf("expected Fix: true to bypass memo cache")
+	}
+	if repFix.Status != runner.StatusPassed || repFix.Summary.Passed != 1 || len(repFix.Checks) != 1 {
+		t.Fatalf("expected check to pass after fix, got: %+v", repFix)
+	}
+	if !repFix.Checks[0].Fixed {
+		t.Fatalf("expected Fixed=true on check result, got: %+v", repFix.Checks[0])
+	}
+}
+
+func TestRunCompactOmitsSkippedChecks(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "calc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/compactdemo\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "calc", "calc.go"), []byte("package calc\n\nfunc Add(a, b int) int { return a + b }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitInitCommit(t, repo)
+	touchModify(t, filepath.Join(repo, "calc", "calc.go"))
+
+	cfg := &config.Config{
+		Version: 1,
+		Mode:    config.ModeLocal,
+		Stack:   config.StackPolyglot,
+		Checks: []config.CheckConfig{
+			{
+				Name:       "vet",
+				Command:    "go vet {{packages}}",
+				Scope:      config.ScopeChangedPackages,
+				Stack:      config.StackGo,
+				Parser:     "go-vet",
+				Timeout:    "45s",
+				Extensions: []string{".go"},
+			},
+			{
+				Name:       "py-lint",
+				Command:    "ruff check {{files}}",
+				Scope:      config.ScopeChangedFiles,
+				Stack:      config.StackPython,
+				Parser:     "ruff",
+				Timeout:    "30s",
+				Extensions: []string{".py"},
+			},
+		},
+	}
+	sb := sandbox.NewLocal(repo, cfg.Stack)
+
+	// 1. Compact run omits skipped checks from Checks while preserving Summary.Skipped.
+	repCompact, err := runner.Run(context.Background(), cfg, sb, runner.Options{
+		ProjectDir: repo,
+		Compact:    true,
+	})
+	if err != nil {
+		t.Fatalf("runner.Run (compact): %v", err)
+	}
+	if repCompact.Status != runner.StatusPassed {
+		t.Fatalf("expected passed status, got: %+v", repCompact)
+	}
+	if repCompact.Summary.TotalChecks != 2 || repCompact.Summary.Passed != 1 || repCompact.Summary.Skipped != 1 {
+		t.Fatalf("unexpected summary: %+v", repCompact.Summary)
+	}
+	if len(repCompact.Checks) != 1 || repCompact.Checks[0].Name != "vet" {
+		t.Fatalf("expected only non-skipped check in compact report, got: %+v", repCompact.Checks)
+	}
+
+	// 2. Non-compact run (even via memo cache) retains skipped checks.
+	repFull, err := runner.Run(context.Background(), cfg, sb, runner.Options{
+		ProjectDir: repo,
+		Compact:    false,
+	})
+	if err != nil {
+		t.Fatalf("runner.Run (full): %v", err)
+	}
+	if len(repFull.Checks) != 2 || repFull.Checks[1].Status != runner.StatusSkipped {
+		t.Fatalf("expected skipped check present when Compact=false, got: %+v", repFull.Checks)
+	}
+
+	// 3. Cached compact run still omits skipped checks while preserving Summary.Skipped.
+	repCompactCached, err := runner.Run(context.Background(), cfg, sb, runner.Options{
+		ProjectDir: repo,
+		Compact:    true,
+	})
+	if err != nil {
+		t.Fatalf("runner.Run (compact cached): %v", err)
+	}
+	if !repCompactCached.Cached {
+		t.Fatalf("expected memo cache hit on repeated run")
+	}
+	if repCompactCached.Summary.Skipped != 1 || len(repCompactCached.Checks) != 1 {
+		t.Fatalf("expected cached compact report to omit skipped checks and preserve Summary.Skipped, got: %+v", repCompactCached)
+	}
+}

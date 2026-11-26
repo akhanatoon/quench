@@ -172,6 +172,7 @@ func detectGo(projectDir string) *Config {
 		{
 			Name:       "vet",
 			Command:    "go vet {{packages}}",
+			FixCommand: "gofmt -w {{files}}",
 			Scope:      ScopeChangedPackages,
 			Stack:      StackGo,
 			Parser:     "go-vet",
@@ -192,6 +193,7 @@ func detectGo(projectDir string) *Config {
 		checks = append([]CheckConfig{{
 			Name:       "lint",
 			Command:    "golangci-lint run {{packages}}",
+			FixCommand: "golangci-lint run --fix {{packages}}",
 			Scope:      ScopeChangedPackages,
 			Stack:      StackGo,
 			Parser:     "golangci-lint",
@@ -334,6 +336,7 @@ func detectNode(projectDir string) *Config {
 		checks = append(checks, CheckConfig{
 			Name:       "lint",
 			Command:    runner + " eslint {{files}}",
+			FixCommand: runner + " eslint --fix {{files}}",
 			Scope:      ScopeChangedFiles,
 			Stack:      StackNode,
 			Parser:     "eslint",
@@ -444,6 +447,7 @@ func detectPython(projectDir string) *Config {
 		{
 			Name:       "lint",
 			Command:    "ruff check {{files}}",
+			FixCommand: "ruff check --fix {{files}}",
 			Scope:      ScopeChangedFiles,
 			Stack:      StackPython,
 			Parser:     "ruff",

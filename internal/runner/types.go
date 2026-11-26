@@ -14,6 +14,7 @@ const (
 type CheckResult struct {
 	Name           string    `json:"name"`
 	Status         string    `json:"status"`
+	Fixed          bool      `json:"fixed,omitempty"`
 	WorkingDir     string    `json:"working_dir,omitempty"`
 	DurationMs     int64     `json:"duration_ms"`
 	Command        string    `json:"command,omitempty"`

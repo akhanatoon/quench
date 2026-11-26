@@ -122,3 +122,77 @@ func TestExpandJSReverseImporters_EmptyInput(t *testing.T) {
 		t.Fatalf("expected nil for empty changedFiles, got %v", got)
 	}
 }
+
+func TestExpandJSReverseImporters_TSConfigPathAliasesAndJSONC(t *testing.T) {
+	dir := t.TempDir()
+
+	// JSONC with // line comments, /* block comments */, trailing commas, and /* inside string literals
+	writeTestFile(t, dir, "tsconfig.json", `{
+  // Root TypeScript configuration
+  "compilerOptions": {
+    /* Base URL defaults to "." when omitted, set explicitly here */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"], // inline comment after trailing comma
+      "@components/*": ["src/components/*",],
+    },
+  },
+}`)
+
+	// 2-hop chain via @/* alias:
+	// src/lib/auth.ts <- src/services/session.ts (via @/lib/auth) <- tests/auth.test.ts (via @/services/session)
+	writeTestFile(t, dir, "src/lib/auth.ts", `export function verifyToken(t: string) { return t.length > 0; }`)
+	writeTestFile(t, dir, "src/services/session.ts", `import { verifyToken } from '@/lib/auth';
+export const checkSession = (t: string) => verifyToken(t);`)
+	writeTestFile(t, dir, "tests/auth.test.ts", `import { checkSession } from '@/services/session';
+expect(checkSession('abc')).toBe(true);`)
+
+	// Component alias + barrel index resolution
+	writeTestFile(t, dir, "src/components/Button/index.tsx", `import { verifyToken } from '@/lib/auth';
+export const Button = () => verifyToken('x');`)
+	writeTestFile(t, dir, "src/pages/Login.tsx", `import { Button } from '@components/Button';
+export const Login = () => Button();`)
+
+	// Unrelated external package import should NOT be included
+	writeTestFile(t, dir, "src/unrelated.ts", `import React from 'react';
+export const y = 2;`)
+
+	got := ExpandJSReverseImporters(dir, []string{"src/lib/auth.ts"})
+	want := []string{
+		"src/components/Button/index.tsx",
+		"src/lib/auth.ts",
+		"src/pages/Login.tsx",
+		"src/services/session.ts",
+		"tests/auth.test.ts",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ExpandJSReverseImporters() =\n%v\nwant:\n%v", got, want)
+	}
+}
+
+func TestExpandJSReverseImporters_JSConfigFallbackAndBaseURL(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestFile(t, dir, "jsconfig.json", `{
+  /* jsconfig with non-root baseUrl */
+  "compilerOptions": {
+    "baseUrl": "src",
+    "paths": {
+      "@utils/*": ["utils/*"],
+    }
+  }
+}`)
+
+	writeTestFile(t, dir, "src/utils/format.js", `export const fmt = (s) => s.trim();`)
+	writeTestFile(t, dir, "src/app.jsx", `import { fmt } from '@utils/format';
+export const App = () => fmt('hi');`)
+
+	got := ExpandJSReverseImporters(dir, []string{"src/utils/format.js"})
+	want := []string{
+		"src/app.jsx",
+		"src/utils/format.js",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ExpandJSReverseImporters() =\n%v\nwant:\n%v", got, want)
+	}
+}

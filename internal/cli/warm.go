@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/akhanatoon/quench/internal/config"
 	"github.com/akhanatoon/quench/internal/sandbox"
@@ -47,10 +48,36 @@ func newWarmCmd() *cobra.Command {
 		},
 	}
 
+	var statusAll bool
 	statusCmd := &cobra.Command{
 		Use:   "status",
 		Short: "Inspect warm sandbox state, image, uptime, and cache volumes",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if statusAll {
+				containers, err := sandbox.ListManagedContainers(context.Background())
+				if err != nil {
+					return err
+				}
+				if jsonOut {
+					if containers == nil {
+						containers = []sandbox.StatusInfo{}
+					}
+					enc := json.NewEncoder(cmd.OutOrStdout())
+					enc.SetIndent("", "  ")
+					return enc.Encode(containers)
+				}
+				if len(containers) == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "No quench-managed warm containers found.")
+					return nil
+				}
+				tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+				fmt.Fprintln(tw, "NAME\tSTATE\tSTACK\tIMAGE\tPROJECT DIR")
+				for _, c := range containers {
+					fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+						c.ContainerName, c.State, c.Stack, c.Image, c.ProjectDir)
+				}
+				return tw.Flush()
+			}
 			projectDir, err := resolveProjectDir()
 			if err != nil {
 				return err
@@ -79,6 +106,7 @@ func newWarmCmd() *cobra.Command {
 			return nil
 		},
 	}
+	statusCmd.Flags().BoolVarP(&statusAll, "all", "a", false, "List all quench-managed warm containers across all repositories")
 
 	var purgeCache bool
 	downCmd := &cobra.Command{

@@ -64,6 +64,7 @@ type SandboxConfig struct {
 	CPUs          string   `yaml:"cpus,omitempty" json:"cpus,omitempty"`
 	WorkspaceMode string   `yaml:"workspace_mode,omitempty" json:"workspace_mode,omitempty"`
 	User          string   `yaml:"user,omitempty" json:"user,omitempty"`
+	CopyExclude   []string `yaml:"copy_exclude,omitempty" json:"copy_exclude,omitempty"`
 }
 
 var memoryPattern = regexp.MustCompile(`(?i)^[0-9]+(b|k|m|g)?$`)
@@ -89,6 +90,7 @@ func (s SandboxConfig) ParsedIdleTimeout() time.Duration {
 type CheckConfig struct {
 	Name       string    `yaml:"name" json:"name"`
 	Command    string    `yaml:"command" json:"command"`
+	FixCommand string    `yaml:"fix_command,omitempty" json:"fix_command,omitempty"`
 	Scope      string    `yaml:"scope" json:"scope"`
 	Stack      StackType `yaml:"stack,omitempty" json:"stack,omitempty"`
 	Image      string    `yaml:"image,omitempty" json:"image,omitempty"`

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -121,6 +122,7 @@ func CheckDaemon(ctx context.Context) error {
 
 type inspectData struct {
 	ID     string `json:"Id"`
+	Name   string `json:"Name"`
 	Config struct {
 		Image  string            `json:"Image"`
 		Labels map[string]string `json:"Labels"`
@@ -465,6 +467,78 @@ func (d *DockerSandbox) cacheVolumeName(containerPath string) string {
 	return fmt.Sprintf("%s%s-%s", VolumePrefix, d.hash8, slug)
 }
 
+// ListManagedContainers returns status information for all quench.managed=true
+// containers across all repositories on the active Docker daemon.
+func ListManagedContainers(ctx context.Context) ([]StatusInfo, error) {
+	if err := CheckDaemon(ctx); err != nil {
+		return nil, err
+	}
+	out, err := dockerOutput(ctx, 10*time.Second, "ps", "-a", "--filter", "label=quench.managed=true", "--format", "{{.Names}}")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, name := range strings.Split(strings.TrimSpace(out), "\n") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return []StatusInfo{}, nil
+	}
+
+	inspectArgs := append([]string{"inspect"}, names...)
+	rawInspect, err := dockerOutput(ctx, 10*time.Second, inspectArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("inspect managed containers: %w", err)
+	}
+	var items []inspectData
+	if err := json.Unmarshal([]byte(rawInspect), &items); err != nil {
+		return nil, fmt.Errorf("parse docker inspect output: %w", err)
+	}
+
+	results := make([]StatusInfo, 0, len(items))
+	for i, item := range items {
+		fallback := ""
+		if i < len(names) {
+			fallback = names[i]
+		}
+		results = append(results, statusInfoFromInspect(item, fallback))
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].ContainerName < results[j].ContainerName
+	})
+	return results, nil
+}
+
+func statusInfoFromInspect(item inspectData, fallbackName string) StatusInfo {
+	name := strings.TrimPrefix(strings.TrimSpace(item.Name), "/")
+	if name == "" {
+		name = fallbackName
+	}
+	id := item.ID
+	if len(id) >= 12 {
+		id = id[:12]
+	}
+	st := StatusInfo{
+		Mode:          "docker-warm",
+		State:         "stopped",
+		ContainerName: name,
+		ContainerID:   id,
+		Image:         item.Config.Image,
+		ProjectDir:    item.Config.Labels["quench.project_dir"],
+		Stack:         item.Config.Labels["quench.stack"],
+	}
+	if item.State.Running {
+		st.State = "running"
+		if started, err := time.Parse(time.RFC3339Nano, item.State.StartedAt); err == nil {
+			st.Uptime = time.Since(started).Round(time.Second).String()
+		}
+	}
+	return st
+}
+
 // GarbageCollect removes managed warm containers whose idle time exceeds their configured idle_timeout.
 func GarbageCollect(ctx context.Context, forceAll bool) ([]string, error) {
 	if err := CheckDaemon(ctx); err != nil {
@@ -728,8 +802,15 @@ var copySkipDirs = map[string]bool{
 	"__pycache__":  true,
 }
 
+func (d *DockerSandbox) copyExclude() []string {
+	if d.cfg == nil {
+		return nil
+	}
+	return d.cfg.Sandbox.CopyExclude
+}
+
 func (d *DockerSandbox) syncWorkspaceCopyIfChanged(ctx context.Context) error {
-	fp := workspaceFingerprint(d.projectDir)
+	fp := workspaceFingerprint(d.projectDir, d.copyExclude()...)
 	d.syncMu.Lock()
 	alreadySynced := fp != "" && fp == d.lastSyncFingerprint
 	d.syncMu.Unlock()
@@ -754,11 +835,12 @@ func (d *DockerSandbox) syncWorkspaceCopy(ctx context.Context) error {
 		cachePaths = d.cfg.Sandbox.CachePaths
 	}
 	cleanCmd := workspaceCopyCleanCmd(cachePaths)
+	excludes := d.copyExclude()
 
 	pr, pw := io.Pipe()
 	tarErrCh := make(chan error, 1)
 	go func() {
-		err := writeWorkspaceTar(d.projectDir, pw)
+		err := writeWorkspaceTar(d.projectDir, pw, excludes...)
 		_ = pw.CloseWithError(err)
 		tarErrCh <- err
 	}()
@@ -825,24 +907,28 @@ func workspaceCopyCleanCmd(cachePaths []string) string {
 	return sb.String()
 }
 
-func writeWorkspaceTar(projectDir string, w io.Writer) error {
+func writeWorkspaceTar(projectDir string, w io.Writer, excludes ...string) error {
 	tw := tar.NewWriter(w)
-	err := filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(projectDir, func(p string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		rel, err := filepath.Rel(projectDir, path)
+		rel, err := filepath.Rel(projectDir, p)
 		if err != nil {
 			return err
 		}
 		if rel == "." {
 			return nil
 		}
-		if entry.IsDir() && copySkipDirs[entry.Name()] {
-			return filepath.SkipDir
-		}
-		if !entry.IsDir() && shouldSkipCopyFile(entry.Name()) {
-			return nil
+		relSlash := filepath.ToSlash(rel)
+		if entry.IsDir() {
+			if copySkipDirs[entry.Name()] || matchesCopyExclude(entry.Name(), relSlash, excludes) {
+				return filepath.SkipDir
+			}
+		} else {
+			if shouldSkipCopyFile(entry.Name()) || matchesCopyExclude(entry.Name(), relSlash, excludes) {
+				return nil
+			}
 		}
 
 		info, err := entry.Info()
@@ -850,11 +936,11 @@ func writeWorkspaceTar(projectDir string, w io.Writer) error {
 			return err
 		}
 
-		tarName := filepath.ToSlash(rel)
+		tarName := relSlash
 		mode := info.Mode()
 
 		if mode&fs.ModeSymlink != 0 {
-			target, err := os.Readlink(path)
+			target, err := os.Readlink(p)
 			if err != nil {
 				return nil
 			}
@@ -887,7 +973,7 @@ func writeWorkspaceTar(projectDir string, w io.Writer) error {
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
 		}
-		f, err := os.Open(path)
+		f, err := os.Open(p)
 		if err != nil {
 			return err
 		}
@@ -902,6 +988,35 @@ func writeWorkspaceTar(projectDir string, w io.Writer) error {
 		err = closeErr
 	}
 	return err
+}
+
+func matchesCopyExclude(name, relSlash string, excludes []string) bool {
+	for _, raw := range excludes {
+		p := strings.TrimSpace(raw)
+		if p == "" {
+			continue
+		}
+		pSlash := strings.TrimPrefix(filepath.ToSlash(p), "./")
+		pTrim := strings.TrimSuffix(pSlash, "/")
+		for _, pat := range []string{pSlash, pTrim} {
+			if pat == "" {
+				continue
+			}
+			if ok, _ := path.Match(pat, name); ok {
+				return true
+			}
+			if ok, _ := path.Match(pat, relSlash); ok {
+				return true
+			}
+			if ok, _ := filepath.Match(pat, name); ok {
+				return true
+			}
+			if ok, _ := filepath.Match(pat, relSlash); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func shouldSkipCopyFile(name string) bool {
@@ -922,28 +1037,32 @@ func shouldSkipCopyFile(name string) bool {
 	return lower == "id_rsa" || lower == "id_ed25519"
 }
 
-func workspaceFingerprint(projectDir string) string {
+func workspaceFingerprint(projectDir string, excludes ...string) string {
 	h := sha256.New()
-	err := filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(projectDir, func(p string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
-		rel, err := filepath.Rel(projectDir, path)
+		rel, err := filepath.Rel(projectDir, p)
 		if err != nil || rel == "." {
 			return nil
 		}
-		if entry.IsDir() && copySkipDirs[entry.Name()] {
-			return filepath.SkipDir
-		}
-		if !entry.IsDir() && shouldSkipCopyFile(entry.Name()) {
-			return nil
+		relSlash := filepath.ToSlash(rel)
+		if entry.IsDir() {
+			if copySkipDirs[entry.Name()] || matchesCopyExclude(entry.Name(), relSlash, excludes) {
+				return filepath.SkipDir
+			}
+		} else {
+			if shouldSkipCopyFile(entry.Name()) || matchesCopyExclude(entry.Name(), relSlash, excludes) {
+				return nil
+			}
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return nil
 		}
 		_, _ = fmt.Fprintf(h, "%s\x00%d\x00%d\x00%d\n",
-			filepath.ToSlash(rel),
+			relSlash,
 			info.Size(),
 			info.ModTime().UnixNano(),
 			uint32(info.Mode()),

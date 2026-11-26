@@ -233,6 +233,8 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 			FailFast         bool     `json:"fail_fast"`
 			ChangedLinesOnly bool     `json:"changed_lines_only"`
 			NoCache          bool     `json:"no_cache"`
+			Fix              bool     `json:"fix"`
+			Compact          *bool    `json:"compact"`
 		}
 		if len(p.Arguments) > 0 {
 			if err := json.Unmarshal(p.Arguments, &args); err != nil {
@@ -272,6 +274,11 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 			}
 		}
 
+		compact := true
+		if args.Compact != nil {
+			compact = *args.Compact
+		}
+
 		report, err := runner.Run(ctx, cfg, sb, runner.Options{
 			ProjectDir:       projDir,
 			BaseRef:          args.BaseRef,
@@ -279,6 +286,8 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 			FailFast:         args.FailFast,
 			ChangedLinesOnly: args.ChangedLinesOnly,
 			NoCache:          args.NoCache,
+			Fix:              args.Fix,
+			Compact:          compact,
 		})
 		if err != nil {
 			var daemonErr *sandbox.DaemonUnavailableError
@@ -490,6 +499,14 @@ func toolDefinitions() []map[string]any {
 					"no_cache": map[string]any{
 						"type":        "boolean",
 						"description": "Bypass memoization cache and force re-execution.",
+					},
+					"fix": map[string]any{
+						"type":        "boolean",
+						"description": "Run configured auto-fix commands before verification.",
+					},
+					"compact": map[string]any{
+						"type":        "boolean",
+						"description": "Omit skipped checks from the checks array while preserving summary.skipped (default: true).",
 					},
 				},
 			},
