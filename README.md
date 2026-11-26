@@ -7,8 +7,9 @@
 
 `quench` is a single-binary Go CLI and native `stdio` MCP server that verifies only what changed in `git diff` (plus direct reverse-importers) inside a persistent warm Docker container or locally, returning a compressed, token-lean JSON report coding agents can fix in a single turn.
 
-<!-- Demo GIF / Video Placeholder -->
-> 🎬 **[15s Demo Placeholder]** — `assets/demo.gif`: Claude Code / Codex edits a broken handler → calls `verify_changes` over MCP → `quench` runs diff-scoped checks in a warm Docker container in `~1.09s` (`vet: 382ms`, `test: 386ms`) → returns a compact JSON pinpointing `file:line` → agent fixes it on the first retry.
+<p align="center">
+  <img src="assets/demo.gif" alt="quench warm-sandbox diff verification demo" width="880" />
+</p>
 
 ---
 
