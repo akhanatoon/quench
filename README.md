@@ -3,7 +3,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg" />
   <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg" />
-  <img alt="quench" src="assets/logo-dark.svg" width="380" />
+  <img alt="quench" src="assets/logo-dark.svg" width="260" />
 </picture>
 
 <p><strong>Warm-sandbox, diff-aware verification for AI coding agents — in ~1 second, not CI minutes.</strong></p>
