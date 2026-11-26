@@ -6,7 +6,7 @@ branding:
 
 inputs:
   version:
-    description: 'quench release version to install (e.g. v0.2.0 or latest)'
+    description: 'quench release version to install (e.g. v0.1.2 or latest)'
     required: false
     default: 'latest'
   base:

@@ -170,11 +170,11 @@ Exact 1-line Markdown row (under **Developer Tools**):
 
 - [x] **Veripod benchmark run:** Measured 41.4s / 43.5 KB full suite vs 4.13s / 702 B uncached `quench` JSON (2.18s cached) and injected into `docs/LAUNCH.md` and `README.md`.
 - [ ] **GitHub Social Preview:** Upload `assets/social-preview.png` under **Settings → General → Social preview** on `akhanatoon/quench`.
-- [ ] **Release `v0.2.0`:** Push annotated tag `v0.2.0` and verify `.github/workflows/release.yml` (GoReleaser) publishes `checksums.txt` plus `darwin`/`linux`/`windows` (`amd64` + `arm64`) archives.
+- [ ] **Release `v0.1.2`:** Push annotated tag `v0.1.2` and verify `.github/workflows/release.yml` (GoReleaser) publishes `checksums.txt` plus `darwin`/`linux`/`windows` (`amd64` + `arm64`) archives.
 - [ ] **Update Homebrew tap (`akhanatoon/homebrew-tap`):**
   ```bash
-  python3 scripts/render-homebrew-formula.py 0.2.0 \
-    https://github.com/akhanatoon/quench/releases/download/v0.2.0/checksums.txt \
+  python3 scripts/render-homebrew-formula.py 0.1.2 \
+    https://github.com/akhanatoon/quench/releases/download/v0.1.2/checksums.txt \
     -o ../homebrew-tap/Formula/quench.rb
   ```
   Commit and push `Formula/quench.rb` to `akhanatoon/homebrew-tap`.
@@ -187,7 +187,7 @@ Exact 1-line Markdown row (under **Developer Tools**):
   ```
 - [ ] **Go install smoke test:**
   ```bash
-  go install github.com/akhanatoon/quench/cmd/quench@v0.2.0
+  go install github.com/akhanatoon/quench/cmd/quench@latest
   quench --version
   ```
 - [ ] **Publish posts:** X (with `assets/demo-x.mp4`), LinkedIn/X TR, Show HN, Reddit (`r/ClaudeAI`, `r/golang`), and open `awesome-mcp-servers` PR.

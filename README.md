@@ -202,7 +202,7 @@ Run diff-aware verification directly in pull requests with inline annotations:
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0
-- uses: akhanatoon/quench@v0.2.0
+- uses: akhanatoon/quench@v0.1.2
   with:
     base: ${{ github.event.pull_request.base.sha }}
     format: github
