@@ -33,7 +33,7 @@ func FormatGitHub(r *RunReport) string {
 		for _, f := range ch.Failures {
 			var props []string
 			if f.File != "" {
-				props = append(props, "file="+escapeGitHubProperty(filepath.ToSlash(f.File)))
+				props = append(props, "file="+escapeGitHubProperty(normalizeSlashPath(f.File)))
 			}
 			if f.Line > 0 {
 				props = append(props, fmt.Sprintf("line=%d", f.Line))
@@ -53,6 +53,10 @@ func FormatGitHub(r *RunReport) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func normalizeSlashPath(p string) string {
+	return strings.ReplaceAll(filepath.ToSlash(p), "\\", "/")
 }
 
 func escapeGitHubData(s string) string {
@@ -148,7 +152,7 @@ func FormatSARIF(r *RunReport) ([]byte, error) {
 				if f.File != "" {
 					phys := sarifPhysicalLocation{
 						ArtifactLocation: sarifArtifactLocation{
-							URI: filepath.ToSlash(f.File),
+							URI: normalizeSlashPath(f.File),
 						},
 					}
 					if f.Line > 0 || f.Column > 0 {
