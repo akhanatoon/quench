@@ -109,7 +109,7 @@ func gitLines(ctx context.Context, dir string, args ...string) ([]string, error)
 func normalizeRelPath(p string) string {
 	p = strings.TrimSpace(p)
 	p = strings.Trim(p, `"`)
-	p = filepath.ToSlash(p)
+	p = strings.ReplaceAll(filepath.ToSlash(p), "\\", "/")
 	p = strings.TrimPrefix(p, "./")
 	return p
 }

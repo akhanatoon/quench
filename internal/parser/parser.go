@@ -158,7 +158,7 @@ func normalizeFailurePath(p string, normProjLower string) string {
 	if p == "" {
 		return ""
 	}
-	p = filepath.ToSlash(p)
+	p = strings.ReplaceAll(filepath.ToSlash(p), "\\", "/")
 	p = strings.TrimPrefix(p, "/workspace/")
 	if normProjLower != "" && strings.HasPrefix(strings.ToLower(p), normProjLower+"/") {
 		p = p[len(normProjLower)+1:]

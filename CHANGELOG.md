@@ -5,6 +5,11 @@ All notable changes to `quench` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-11-26
+
+### Fixed
+- **Cross-platform path normalization in `diff` and `parser`**: Normalize Windows backslashes (`\`) consistently on Linux/macOS hosts inside `normalizeRelPath` and `normalizeFailurePath`.
+
 ## [0.5.1] - 2026-11-26
 
 ### Fixed
