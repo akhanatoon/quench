@@ -155,14 +155,15 @@ func TestPythonSrcLayoutFromPyproject(t *testing.T) {
 		t.Fatalf("lib src layout: unexpected command: %+v", res)
 	}
 
-	// 2. hatch wheel packages = ["src/mypkg"].
+	// 2. hatch wheel packages = ["lib/mypkg"]: a non-src root, so this
+	// test fails if Hatch parsing does not run (the fallback is "src").
 	hatchRepo := t.TempDir()
-	writeFile(t, hatchRepo, "pyproject.toml", "[tool.hatch.build.targets.wheel]\npackages = [\"src/mypkg\"]\n")
-	writeFile(t, hatchRepo, "src/mypkg/core.py", "def run(): return 1\n")
+	writeFile(t, hatchRepo, "pyproject.toml", "[tool.hatch.build.targets.wheel]\npackages = [\"lib/mypkg\"]\n")
+	writeFile(t, hatchRepo, "lib/mypkg/core.py", "def run(): return 1\n")
 	writeFile(t, hatchRepo, "tests/mypkg/test_core.py", "def test_run(): assert True\n")
-	res = Resolve(hatchRepo, config.StackPython, pyCheck, []string{"src/mypkg/core.py"})
+	res = Resolve(hatchRepo, config.StackPython, pyCheck, []string{"lib/mypkg/core.py"})
 	if res.Skip || res.Command != "pytest -q tests/mypkg/test_core.py" {
-		t.Fatalf("hatch src layout: unexpected command: %+v", res)
+		t.Fatalf("hatch lib layout: unexpected command: %+v", res)
 	}
 
 	// 3. setuptools find where = ["src"] still maps, driven by config now.
@@ -183,6 +184,75 @@ func TestPythonSrcLayoutFromPyproject(t *testing.T) {
 	res = Resolve(initRepo, config.StackPython, pyCheck, []string{"lib/billing/__init__.py"})
 	if res.Skip || res.Command != "pytest -q tests/billing" {
 		t.Fatalf("__init__ under custom root: unexpected command: %+v", res)
+	}
+}
+
+func TestPythonSrcRoots(t *testing.T) {
+	cases := []struct {
+		name string
+		toml string
+		want []string
+	}{
+		{
+			name: "setuptools where single line",
+			toml: "[tool.setuptools.packages.find]\nwhere = [\"lib\"]\n",
+			want: []string{"lib"},
+		},
+		{
+			name: "setuptools where multi-line array",
+			toml: "[tool.setuptools.packages.find]\nwhere = [\n    \"lib\",\n    \"vendor\",\n]\n",
+			want: []string{"vendor", "lib"},
+		},
+		{
+			name: "package-dir empty key is a root",
+			toml: "[tool.setuptools.package-dir]\n\"\" = \"src\"\n",
+			want: []string{"src"},
+		},
+		{
+			name: "package-dir named mapping contributes its parent",
+			toml: "[tool.setuptools.package-dir]\nmypkg = \"lib/mypkg\"\n",
+			want: []string{"lib"},
+		},
+		{
+			name: "commented-out package-dir line is ignored",
+			toml: "[tool.setuptools.package-dir]\n# \"\" = \"old_src\"\n\"\" = \"src\"\n",
+			want: []string{"src"},
+		},
+		{
+			name: "inline comment after where is ignored",
+			toml: "[tool.setuptools.packages.find] # find packages\nwhere = [\"lib\"] # e.g. \"src\"\n",
+			want: []string{"lib"},
+		},
+		{
+			name: "comment inside multi-line array is ignored",
+			toml: "[tool.setuptools.packages.find]\nwhere = [\n    \"lib\",\n    # \"old_lib\",\n]\n",
+			want: []string{"lib"},
+		},
+		{
+			name: "hatch trailing slash is trimmed",
+			toml: "[tool.hatch.build.targets.wheel]\npackages = [\"src/mypkg/\"]\n",
+			want: []string{"src"},
+		},
+		{
+			name: "hatch non-src root",
+			toml: "[tool.hatch.build.targets.wheel]\npackages = [\"lib/mypkg\"]\n",
+			want: []string{"lib"},
+		},
+		{
+			name: "no pyproject declarations",
+			toml: "[project]\nname = \"demo\"\n",
+			want: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "pyproject.toml", tc.toml)
+			got := pythonSrcRoots(dir)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("pythonSrcRoots = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
