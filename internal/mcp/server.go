@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/akhanatoon/quench/internal/config"
+	"github.com/akhanatoon/quench/internal/history"
 	"github.com/akhanatoon/quench/internal/runner"
 	"github.com/akhanatoon/quench/internal/sandbox"
 )
@@ -312,6 +313,7 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 			}
 			return errorToolResult(err.Error()), nil
 		}
+		_ = history.Append(projDir, history.FromReport("mcp", report))
 		return jsonToolResult(report)
 
 	case "sandbox_status":

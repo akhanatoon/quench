@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/akhanatoon/quench/internal/config"
+	"github.com/akhanatoon/quench/internal/history"
 	"github.com/akhanatoon/quench/internal/runner"
 	"github.com/akhanatoon/quench/internal/sandbox"
 	"github.com/spf13/cobra"
@@ -82,6 +83,7 @@ func newRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			_ = history.Append(projectDir, history.FromReport("cli", report))
 
 			outFmt := strings.ToLower(strings.TrimSpace(format))
 			if jsonOut {

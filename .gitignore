@@ -6,3 +6,4 @@
 # Coverage & test artifacts
 *.out
 coverage.txt
+.quench/
