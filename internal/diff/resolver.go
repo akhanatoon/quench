@@ -363,6 +363,28 @@ func dirHasGoFiles(dir string) bool {
 
 var tomlQuotedStringRe = regexp.MustCompile(`"([^"\\]*)"|'([^'\\]*)'`)
 
+// stripTOMLComment cuts a TOML line at the first # outside a quoted
+// string, so comment text never looks like a value. A # inside single
+// or double quotes is kept, as is a backslash escape inside a double
+// quoted string.
+func stripTOMLComment(line string) string {
+	inSingle, inDouble := false, false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\' && inDouble:
+			i++ // skip the escaped character
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+		case c == '#' && !inSingle && !inDouble:
+			return line[:i]
+		}
+	}
+	return line
+}
+
 // pythonSrcRoots returns the Python source roots declared in the repo's
 // pyproject.toml, e.g. ["src"] for a setuptools packages.find
 // where = ["src"], or ["src"] for hatch wheel
@@ -372,7 +394,11 @@ var tomlQuotedStringRe = regexp.MustCompile(`"([^"\\]*)"|'([^'\\]*)'`)
 //
 // The file is scanned with a small targeted parser rather than a TOML
 // dependency: only the keys below are read, and multi-line arrays are
-// supported by accumulating lines until the brackets balance.
+// supported by accumulating lines until the brackets balance. Comment
+// text is stripped before parsing, so a commented-out line or an inline
+// comment never yields a root. For [tool.setuptools.package-dir] the
+// empty key ("" = "src") is a root itself, while a named mapping
+// (mypkg = "lib/mypkg") contributes its parent directory, "lib".
 func pythonSrcRoots(repoDir string) []string {
 	data, err := os.ReadFile(filepath.Join(repoDir, "pyproject.toml"))
 	if err != nil {
@@ -407,8 +433,16 @@ func pythonSrcRoots(repoDir string) []string {
 			case section == "tool.setuptools.packages.find" && key == "where":
 				add(val)
 			case section == "tool.setuptools.package-dir":
-				add(val)
+				if key == `""` || key == `''` {
+					add(val)
+				} else {
+					// Named mapping: the value is the package
+					// directory itself, so its parent is the
+					// source root, like Hatch packages.
+					add(path.Dir(val))
+				}
 			case section == "tool.hatch.build.targets.wheel" && key == "packages":
+				val = strings.TrimRight(val, "/")
 				if i := strings.LastIndex(val, "/"); i > 0 {
 					add(val[:i])
 				}
@@ -418,10 +452,11 @@ func pythonSrcRoots(repoDir string) []string {
 		buf.Reset()
 	}
 	for _, line := range strings.Split(string(data), "\n") {
+		line = stripTOMLComment(line)
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.HasPrefix(trimmed, "[[") {
 			flush()
-			section = strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]")
+			section = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"))
 			continue
 		}
 		if key != "" {
