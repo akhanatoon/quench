@@ -1,0 +1,23 @@
+name: Feature Request
+description: Propose a new feature, language support, or workflow improvement
+title: "[feat]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or friction
+      description: What workflow bottleneck or agent friction does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the CLI flag, quench.yaml field, or MCP behavior you envision.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered (optional)
