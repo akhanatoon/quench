@@ -137,6 +137,55 @@ func TestResolveGoPackagesPythonTestsAndCriticalTrigger(t *testing.T) {
 	}
 }
 
+func TestPythonSrcLayoutFromPyproject(t *testing.T) {
+	pyCheck := config.CheckConfig{
+		Name:       "test",
+		Command:    "pytest -q {{tests}}",
+		Scope:      config.ScopeMappedTests,
+		Extensions: []string{".py"},
+	}
+
+	// 1. setuptools packages.find with where = ["lib"]: a non-src root.
+	libRepo := t.TempDir()
+	writeFile(t, libRepo, "pyproject.toml", "[tool.setuptools.packages.find]\nwhere = [\"lib\"]\n")
+	writeFile(t, libRepo, "lib/billing/invoice.py", "def total(): return 1\n")
+	writeFile(t, libRepo, "tests/billing/test_invoice.py", "def test_total(): assert True\n")
+	res := Resolve(libRepo, config.StackPython, pyCheck, []string{"lib/billing/invoice.py"})
+	if res.Skip || res.Command != "pytest -q tests/billing/test_invoice.py" {
+		t.Fatalf("lib src layout: unexpected command: %+v", res)
+	}
+
+	// 2. hatch wheel packages = ["src/mypkg"].
+	hatchRepo := t.TempDir()
+	writeFile(t, hatchRepo, "pyproject.toml", "[tool.hatch.build.targets.wheel]\npackages = [\"src/mypkg\"]\n")
+	writeFile(t, hatchRepo, "src/mypkg/core.py", "def run(): return 1\n")
+	writeFile(t, hatchRepo, "tests/mypkg/test_core.py", "def test_run(): assert True\n")
+	res = Resolve(hatchRepo, config.StackPython, pyCheck, []string{"src/mypkg/core.py"})
+	if res.Skip || res.Command != "pytest -q tests/mypkg/test_core.py" {
+		t.Fatalf("hatch src layout: unexpected command: %+v", res)
+	}
+
+	// 3. setuptools find where = ["src"] still maps, driven by config now.
+	srcRepo := t.TempDir()
+	writeFile(t, srcRepo, "pyproject.toml", "[tool.setuptools.packages.find]\nwhere = [\"src\"]\n")
+	writeFile(t, srcRepo, "src/billing/invoice.py", "def total(): return 1\n")
+	writeFile(t, srcRepo, "tests/billing/test_invoice.py", "def test_total(): assert True\n")
+	res = Resolve(srcRepo, config.StackPython, pyCheck, []string{"src/billing/invoice.py"})
+	if res.Skip || res.Command != "pytest -q tests/billing/test_invoice.py" {
+		t.Fatalf("src layout from pyproject: unexpected command: %+v", res)
+	}
+
+	// 4. __init__.py under a custom root maps to the package test dir.
+	initRepo := t.TempDir()
+	writeFile(t, initRepo, "pyproject.toml", "[tool.setuptools.packages.find]\nwhere = [\"lib\"]\n")
+	writeFile(t, initRepo, "lib/billing/__init__.py", "")
+	writeFile(t, initRepo, "tests/billing/test_invoice.py", "def test_total(): assert True\n")
+	res = Resolve(initRepo, config.StackPython, pyCheck, []string{"lib/billing/__init__.py"})
+	if res.Skip || res.Command != "pytest -q tests/billing" {
+		t.Fatalf("__init__ under custom root: unexpected command: %+v", res)
+	}
+}
+
 func TestGoReverseImporterAndWorkingDirAndPythonReverseTests(t *testing.T) {
 	// 1. Go 1-hop reverse importer expansion inside a monorepo working_dir
 	mono := t.TempDir()
