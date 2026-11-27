@@ -93,6 +93,8 @@ quench run --local --changed-lines-only --compact
 
 # Emit token-lean JSON, SARIF 2.1.0, or GitHub Actions annotations
 quench run --base main --format json
+# Read config from another git ref (e.g. older branches/worktrees) or override timeout
+quench run --base origin/main --config origin/main:quench.yaml --timeout 180s --json
 quench run --format sarif
 quench run --format github
 
@@ -202,7 +204,7 @@ Run diff-aware verification directly in pull requests with inline annotations:
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0
-- uses: akhanatoon/quench@v0.1.2
+- uses: akhanatoon/quench@v0.1.3
   with:
     base: ${{ github.event.pull_request.base.sha }}
     format: github
@@ -229,6 +231,7 @@ sandbox:
   cache_paths:
     - /root/.npm
     - /workspace/node_modules
+default_timeout: 120s # optional: default per-check timeout (default 120s)
 max_parallel: 2   # optional: max concurrent checks per wave (0 = unlimited)
 checks:
   - name: web-typecheck
@@ -244,6 +247,8 @@ checks:
     scope: changed_packages
     stack: go
     parser: go-test
+    env:
+      CGO_ENABLED: "1"
     extensions: [".go"]
 ```
 

@@ -1,14 +1,18 @@
 package config
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -49,6 +53,9 @@ type Config struct {
 	Sandbox SandboxConfig `yaml:"sandbox" json:"sandbox"`
 	Checks  []CheckConfig `yaml:"checks" json:"checks"`
 
+	// DefaultTimeout sets the fallback per-check timeout when a check omits timeout (default: 120s).
+	DefaultTimeout string `yaml:"default_timeout,omitempty" json:"default_timeout,omitempty"`
+
 	// MaxParallel caps concurrently executing checks within a wave (0 = unlimited).
 	MaxParallel int `yaml:"max_parallel,omitempty" json:"max_parallel,omitempty"`
 }
@@ -67,7 +74,10 @@ type SandboxConfig struct {
 	CopyExclude   []string `yaml:"copy_exclude,omitempty" json:"copy_exclude,omitempty"`
 }
 
-var memoryPattern = regexp.MustCompile(`(?i)^[0-9]+(b|k|m|g)?$`)
+var (
+	memoryPattern  = regexp.MustCompile(`(?i)^[0-9]+(b|k|m|g)?$`)
+	envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
 
 func (s SandboxConfig) ShouldSyncDeps() bool {
 	if s.SyncDeps == nil {
@@ -88,26 +98,27 @@ func (s SandboxConfig) ParsedIdleTimeout() time.Duration {
 }
 
 type CheckConfig struct {
-	Name       string    `yaml:"name" json:"name"`
-	Command    string    `yaml:"command" json:"command"`
-	FixCommand string    `yaml:"fix_command,omitempty" json:"fix_command,omitempty"`
-	Scope      string    `yaml:"scope" json:"scope"`
-	Stack      StackType `yaml:"stack,omitempty" json:"stack,omitempty"`
-	Image      string    `yaml:"image,omitempty" json:"image,omitempty"`
-	WorkingDir string    `yaml:"working_dir,omitempty" json:"working_dir,omitempty"`
-	Parser     string    `yaml:"parser,omitempty" json:"parser,omitempty"`
-	Timeout    string    `yaml:"timeout,omitempty" json:"timeout,omitempty"`
-	Extensions []string  `yaml:"extensions,omitempty" json:"extensions,omitempty"`
-	DependsOn  []string  `yaml:"depends_on,omitempty" json:"depends_on,omitempty"`
+	Name       string            `yaml:"name" json:"name"`
+	Command    string            `yaml:"command" json:"command"`
+	FixCommand string            `yaml:"fix_command,omitempty" json:"fix_command,omitempty"`
+	Scope      string            `yaml:"scope" json:"scope"`
+	Stack      StackType         `yaml:"stack,omitempty" json:"stack,omitempty"`
+	Image      string            `yaml:"image,omitempty" json:"image,omitempty"`
+	WorkingDir string            `yaml:"working_dir,omitempty" json:"working_dir,omitempty"`
+	Parser     string            `yaml:"parser,omitempty" json:"parser,omitempty"`
+	Timeout    string            `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Env        map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Extensions []string          `yaml:"extensions,omitempty" json:"extensions,omitempty"`
+	DependsOn  []string          `yaml:"depends_on,omitempty" json:"depends_on,omitempty"`
 }
 
 func (c CheckConfig) ParsedTimeout() time.Duration {
 	if c.Timeout == "" {
-		return 60 * time.Second
+		return 120 * time.Second
 	}
 	d, err := time.ParseDuration(c.Timeout)
 	if err != nil || d <= 0 {
-		return 60 * time.Second
+		return 120 * time.Second
 	}
 	return d
 }
@@ -115,9 +126,32 @@ func (c CheckConfig) ParsedTimeout() time.Duration {
 // Load reads quench.yaml (or .quench.yaml) if present; otherwise zero-config detects the project stack(s).
 // Returns (config, loadedFromFile, error).
 func Load(projectDir string) (*Config, bool, error) {
+	return LoadFrom(projectDir, "")
+}
+
+// LoadFrom loads configuration from an explicit file path or git ref spec (e.g. "origin/main:quench.yaml").
+// When configSpec is empty, it falls back to Load(projectDir) behavior.
+func LoadFrom(projectDir string, configSpec string) (*Config, bool, error) {
 	absDir, err := filepath.Abs(projectDir)
 	if err != nil {
 		return nil, false, fmt.Errorf("resolve project dir: %w", err)
+	}
+
+	spec := strings.TrimSpace(configSpec)
+	if spec != "" {
+		data, srcLabel, readErr := readConfigSpec(absDir, spec)
+		if readErr != nil {
+			return nil, true, readErr
+		}
+		var cfg Config
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return nil, true, fmt.Errorf("parse %s: %w", srcLabel, err)
+		}
+		applyDefaults(&cfg, absDir)
+		if err := Validate(&cfg); err != nil {
+			return nil, true, fmt.Errorf("invalid %s: %w", srcLabel, err)
+		}
+		return &cfg, true, nil
 	}
 
 	for _, name := range []string{ConfigFileName, AltConfigFileName} {
@@ -146,6 +180,56 @@ func Load(projectDir string) (*Config, bool, error) {
 		return nil, false, err
 	}
 	return detected, false, nil
+}
+
+func isGitRefSpec(absDir, spec string) bool {
+	idx := strings.IndexByte(spec, ':')
+	if idx <= 1 {
+		// Reject empty ref (":path") and Windows drive letters ("C:\..." or "D:/...").
+		return false
+	}
+	if strings.HasPrefix(spec, `\\`) {
+		return false
+	}
+	// If a literal file with that exact name exists on disk, prefer the file.
+	candidate := spec
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(absDir, candidate)
+	}
+	if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+		return false
+	}
+	return true
+}
+
+func readConfigSpec(absDir, spec string) ([]byte, string, error) {
+	if isGitRefSpec(absDir, spec) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "git", "-C", absDir, "show", spec)
+		cmd.WaitDelay = 2 * time.Second
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			msg := strings.TrimSpace(stderr.String())
+			if msg == "" {
+				msg = err.Error()
+			}
+			return nil, spec, fmt.Errorf("read git config %q: %s", spec, msg)
+		}
+		return stdout.Bytes(), spec, nil
+	}
+
+	cfgPath := spec
+	if !filepath.IsAbs(cfgPath) {
+		cfgPath = filepath.Join(absDir, cfgPath)
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return nil, spec, fmt.Errorf("read %s: %w", spec, err)
+	}
+	return data, spec, nil
 }
 
 func applyDefaults(cfg *Config, projectDir string) {
@@ -181,12 +265,16 @@ func applyDefaults(cfg *Config, projectDir string) {
 	if len(cfg.Checks) == 0 && detected != nil {
 		cfg.Checks = detected.Checks
 	}
+	fallbackTimeout := "120s"
+	if strings.TrimSpace(cfg.DefaultTimeout) != "" {
+		fallbackTimeout = strings.TrimSpace(cfg.DefaultTimeout)
+	}
 	for i := range cfg.Checks {
 		if cfg.Checks[i].Scope == "" {
 			cfg.Checks[i].Scope = ScopeProject
 		}
 		if cfg.Checks[i].Timeout == "" {
-			cfg.Checks[i].Timeout = "60s"
+			cfg.Checks[i].Timeout = fallbackTimeout
 		}
 		if cfg.Checks[i].WorkingDir != "" {
 			cfg.Checks[i].WorkingDir = filepath.ToSlash(filepath.Clean(cfg.Checks[i].WorkingDir))
@@ -224,6 +312,12 @@ func Validate(cfg *Config) error {
 			return fmt.Errorf("invalid sandbox.cpus %q (expected a positive number)", cfg.Sandbox.CPUs)
 		}
 	}
+	if cfg.DefaultTimeout != "" {
+		d, err := time.ParseDuration(cfg.DefaultTimeout)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("invalid default_timeout %q (expected positive duration e.g. 2m)", cfg.DefaultTimeout)
+		}
+	}
 	if cfg.MaxParallel < 0 {
 		return fmt.Errorf("invalid max_parallel %d (must be >= 0)", cfg.MaxParallel)
 	}
@@ -250,6 +344,11 @@ func Validate(cfg *Config) error {
 		if ch.Timeout != "" {
 			if _, err := time.ParseDuration(ch.Timeout); err != nil {
 				return fmt.Errorf("check %q has invalid timeout %q: %w", ch.Name, ch.Timeout, err)
+			}
+		}
+		for k := range ch.Env {
+			if !envNamePattern.MatchString(k) {
+				return fmt.Errorf("check %q has invalid env variable name %q", ch.Name, k)
 			}
 		}
 	}

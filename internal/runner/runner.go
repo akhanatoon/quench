@@ -56,7 +56,7 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 	if !opts.NoCache && !opts.Fix {
 		checkSpecs := make([]string, len(selected))
 		for i, ch := range selected {
-			checkSpecs[i] = ch.Name + "|" + ch.Command + "|" + ch.Image + "|" + ch.WorkingDir
+			checkSpecs[i] = ch.Name + "|" + ch.Command + "|" + ch.Image + "|" + ch.WorkingDir + "|" + formatCheckEnvSpec(ch.Env)
 		}
 		memoKey = ComputeMemoKeyWithEnv(
 			absDir, sb.ModeName(), opts.BaseRef, opts.OnlyChecks, opts.FailFast, opts.ChangedLinesOnly,
@@ -191,7 +191,9 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 								fixExecRes sandbox.ExecResult
 								fixErr     error
 							)
-							if imgSB, ok := sb.(sandbox.ImageAwareSandbox); ok && plan.cfg.Image != "" {
+							if envSB, ok := sb.(sandbox.EnvAwareSandbox); ok && (len(plan.cfg.Env) > 0 || plan.cfg.Image != "") {
+								fixExecRes, fixErr = envSB.ExecWithEnv(runCtx, fixRes.WorkingDir, plan.cfg.Image, fixRes.Command, plan.cfg.Env, plan.cfg.ParsedTimeout())
+							} else if imgSB, ok := sb.(sandbox.ImageAwareSandbox); ok && plan.cfg.Image != "" {
 								fixExecRes, fixErr = imgSB.ExecWithImage(runCtx, fixRes.WorkingDir, plan.cfg.Image, fixRes.Command, plan.cfg.ParsedTimeout())
 							} else {
 								fixExecRes, fixErr = sb.Exec(runCtx, fixRes.WorkingDir, fixRes.Command, plan.cfg.ParsedTimeout())
@@ -206,7 +208,9 @@ func Run(ctx context.Context, cfg *config.Config, sb sandbox.Sandbox, opts Optio
 						execRes sandbox.ExecResult
 						execErr error
 					)
-					if imgSB, ok := sb.(sandbox.ImageAwareSandbox); ok && plan.cfg.Image != "" {
+					if envSB, ok := sb.(sandbox.EnvAwareSandbox); ok && (len(plan.cfg.Env) > 0 || plan.cfg.Image != "") {
+						execRes, execErr = envSB.ExecWithEnv(runCtx, plan.resolved.WorkingDir, plan.cfg.Image, plan.resolved.Command, plan.cfg.Env, plan.cfg.ParsedTimeout())
+					} else if imgSB, ok := sb.(sandbox.ImageAwareSandbox); ok && plan.cfg.Image != "" {
 						execRes, execErr = imgSB.ExecWithImage(runCtx, plan.resolved.WorkingDir, plan.cfg.Image, plan.resolved.Command, plan.cfg.ParsedTimeout())
 					} else {
 						execRes, execErr = sb.Exec(runCtx, plan.resolved.WorkingDir, plan.resolved.Command, plan.cfg.ParsedTimeout())
@@ -483,4 +487,20 @@ func truncateTail(s string, maxLen int) string {
 		return s
 	}
 	return "..." + s[len(s)-maxLen+3:]
+}
+
+func formatCheckEnvSpec(env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+env[k])
+	}
+	return strings.Join(parts, ",")
 }

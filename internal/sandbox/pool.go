@@ -37,6 +37,7 @@ type DockerPool struct {
 var (
 	_ Sandbox           = (*DockerPool)(nil)
 	_ ImageAwareSandbox = (*DockerPool)(nil)
+	_ EnvAwareSandbox   = (*DockerPool)(nil)
 )
 
 // ImageHash4 computes a deterministic 4-hex-character suffix for a container image name.
@@ -168,11 +169,15 @@ func (p *DockerPool) Exec(ctx context.Context, workingDir string, command string
 }
 
 func (p *DockerPool) ExecWithImage(ctx context.Context, workingDir string, image string, command string, timeout time.Duration) (ExecResult, error) {
+	return p.ExecWithEnv(ctx, workingDir, image, command, nil, timeout)
+}
+
+func (p *DockerPool) ExecWithEnv(ctx context.Context, workingDir string, image string, command string, env map[string]string, timeout time.Duration) (ExecResult, error) {
 	entry := p.entryForImage(image)
 	if err := p.ensureEntryWarm(ctx, entry); err != nil {
 		return ExecResult{}, err
 	}
-	return entry.sb.Exec(ctx, workingDir, command, timeout)
+	return entry.sb.ExecWithEnv(ctx, workingDir, image, command, env, timeout)
 }
 
 // Status reports the primary sandbox status along with cache volumes across all pool sandboxes.

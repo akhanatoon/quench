@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/akhanatoon/quench/internal/config"
 	"github.com/akhanatoon/quench/internal/runner"
@@ -15,6 +16,8 @@ import (
 func newRunCmd() *cobra.Command {
 	var (
 		baseRef          string
+		configSpec       string
+		timeoutOverride  string
 		jsonOut          bool
 		format           string
 		forceLocal       bool
@@ -35,9 +38,19 @@ func newRunCmd() *cobra.Command {
 				return err
 			}
 
-			cfg, _, err := config.Load(projectDir)
+			cfg, _, err := config.LoadFrom(projectDir, configSpec)
 			if err != nil {
 				return err
+			}
+
+			if strings.TrimSpace(timeoutOverride) != "" {
+				d, parseErr := time.ParseDuration(strings.TrimSpace(timeoutOverride))
+				if parseErr != nil || d <= 0 {
+					return fmt.Errorf("invalid --timeout %q (expected positive duration e.g. 5m)", timeoutOverride)
+				}
+				for i := range cfg.Checks {
+					cfg.Checks[i].Timeout = d.String()
+				}
 			}
 
 			mode := cfg.Mode
@@ -49,6 +62,9 @@ func newRunCmd() *cobra.Command {
 			if mode == config.ModeLocal {
 				sb = sandbox.NewLocal(projectDir, cfg.Stack)
 			} else {
+				if warnMsg := sandbox.DockerHostOverrideWarning(context.Background()); warnMsg != "" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "quench warning: %s\n", warnMsg)
+				}
 				sb = sandbox.NewDockerPool(projectDir, cfg)
 				sandbox.BestEffortGC()
 			}
@@ -100,6 +116,8 @@ func newRunCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&baseRef, "base", "", "Compare against git base ref (e.g. main, HEAD~1)")
+	cmd.Flags().StringVar(&configSpec, "config", "", "Load config from a file path or git ref spec (e.g. origin/main:quench.yaml)")
+	cmd.Flags().StringVar(&timeoutOverride, "timeout", "", "Override per-check timeout for this run (e.g. 5m)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit token-lean JSON report (shorthand for --format json)")
 	cmd.Flags().StringVar(&format, "format", "text", "Output format: text, json, sarif, or github")
 	cmd.Flags().BoolVar(&forceLocal, "local", false, "Run checks directly on host instead of Docker sandbox")

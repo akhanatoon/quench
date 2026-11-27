@@ -41,6 +41,12 @@ type Sandbox interface {
 	Teardown(ctx context.Context) error
 }
 
+// EnvAwareSandbox extends Sandbox with per-check environment variables and optional image override.
+type EnvAwareSandbox interface {
+	Sandbox
+	ExecWithEnv(ctx context.Context, workingDir string, image string, command string, env map[string]string, timeout time.Duration) (ExecResult, error)
+}
+
 // ProjectHash8 computes a deterministic 8-hex-character identifier for a project directory.
 func ProjectHash8(projectDir string) string {
 	abs, err := filepath.Abs(projectDir)

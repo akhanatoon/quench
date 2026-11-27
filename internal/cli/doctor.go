@@ -27,7 +27,10 @@ type doctorReport struct {
 }
 
 func newDoctorCmd() *cobra.Command {
-	var jsonOut bool
+	var (
+		jsonOut    bool
+		configSpec string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
@@ -37,7 +40,7 @@ func newDoctorCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rep := runDoctor(context.Background(), projectDir)
+			rep := runDoctorWithConfig(context.Background(), projectDir, configSpec)
 			if jsonOut {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
@@ -64,10 +67,15 @@ func newDoctorCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output diagnostics as JSON")
+	cmd.Flags().StringVar(&configSpec, "config", "", "Load config from a file path or git ref spec (e.g. origin/main:quench.yaml)")
 	return cmd
 }
 
 func runDoctor(ctx context.Context, projectDir string) doctorReport {
+	return runDoctorWithConfig(ctx, projectDir, "")
+}
+
+func runDoctorWithConfig(ctx context.Context, projectDir string, configSpec string) doctorReport {
 	rep := doctorReport{
 		ProjectDir: filepath.ToSlash(projectDir),
 		Ready:      true,
@@ -88,13 +96,15 @@ func runDoctor(ctx context.Context, projectDir string) doctorReport {
 	}
 
 	// 2. Stack / Config detection
-	cfg, fromFile, cfgErr := config.Load(projectDir)
+	cfg, fromFile, cfgErr := config.LoadFrom(projectDir, configSpec)
 	if cfgErr != nil {
 		rep.Ready = false
 		rep.Checks = append(rep.Checks, doctorCheck{Name: "config", Status: "fail", Detail: cfgErr.Error()})
 	} else {
 		src := "zero-config"
-		if fromFile {
+		if strings.TrimSpace(configSpec) != "" {
+			src = strings.TrimSpace(configSpec)
+		} else if fromFile {
 			src = "quench.yaml"
 		}
 		ws := config.DetectWorkspaces(projectDir)
@@ -114,6 +124,13 @@ func runDoctor(ctx context.Context, projectDir string) doctorReport {
 	}
 
 	// 3. Docker Daemon + Warm Sandbox status
+	if warnMsg := sandbox.DockerHostOverrideWarning(ctx); warnMsg != "" {
+		rep.Checks = append(rep.Checks, doctorCheck{
+			Name:   "docker-env",
+			Status: "warn",
+			Detail: warnMsg,
+		})
+	}
 	if dErr := sandbox.CheckDaemon(ctx); dErr != nil {
 		rep.Checks = append(rep.Checks, doctorCheck{
 			Name:   "docker",

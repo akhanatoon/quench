@@ -331,6 +331,10 @@ func (d *DockerSandbox) syncDependenciesIfNeeded(ctx context.Context) error {
 }
 
 func (d *DockerSandbox) Exec(ctx context.Context, workingDir string, command string, timeout time.Duration) (ExecResult, error) {
+	return d.ExecWithEnv(ctx, workingDir, "", command, nil, timeout)
+}
+
+func (d *DockerSandbox) ExecWithEnv(ctx context.Context, workingDir string, _ string, command string, env map[string]string, timeout time.Duration) (ExecResult, error) {
 	if d.effectiveWorkspaceMode(ctx) == config.WorkspaceModeCopy {
 		if err := d.syncWorkspaceCopyIfChanged(ctx); err != nil {
 			return ExecResult{}, err
@@ -341,19 +345,39 @@ func (d *DockerSandbox) Exec(ctx context.Context, workingDir string, command str
 		cleanSub := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(workingDir)), "/")
 		command = fmt.Sprintf("cd /workspace/%s && %s", cleanSub, command)
 	}
-	return d.execRaw(ctx, command, timeout)
+	return d.execRawWithEnv(ctx, command, env, timeout)
+}
+
+func dockerExecArgs(containerName string, wrapped string, env map[string]string) []string {
+	args := []string{"exec", "-i"}
+	if len(env) > 0 {
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, "-e", k+"="+env[k])
+		}
+	}
+	args = append(args, containerName, "sh", "-c", wrapped)
+	return args
 }
 
 func (d *DockerSandbox) execRaw(ctx context.Context, command string, timeout time.Duration) (ExecResult, error) {
+	return d.execRawWithEnv(ctx, command, nil, timeout)
+}
+
+func (d *DockerSandbox) execRawWithEnv(ctx context.Context, command string, env map[string]string, timeout time.Duration) (ExecResult, error) {
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = 120 * time.Second
 	}
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Ensure /usr/local/go/bin and localvenv/node_modules/.bin are reachable inside alpine/slim images
 	wrapped := "export PATH=\"/workspace/node_modules/.bin:/root/.local/bin:/usr/local/go/bin:$PATH\"; " + command
-	cmd := exec.CommandContext(tctx, "docker", "exec", "-i", d.containerName, "sh", "-c", wrapped)
+	cmd := exec.CommandContext(tctx, "docker", dockerExecArgs(d.containerName, wrapped, env)...)
 	cmd.WaitDelay = 2 * time.Second
 
 	var stdout, stderr, combined bytes.Buffer
@@ -585,6 +609,18 @@ func GarbageCollect(ctx context.Context, forceAll bool) ([]string, error) {
 			continue
 		}
 		item := items[0]
+		if isOrphanWorkspace(item.Config.Labels["quench.project_dir"]) {
+			if _, rmErr := dockerOutput(ctx, 15*time.Second, "rm", "-f", name); rmErr == nil {
+				removed = append(removed, name)
+				if rest := strings.TrimPrefix(name, ContainerPrefix); rest != name {
+					hash8 := strings.SplitN(rest, "-", 2)[0]
+					if hash8 != "" {
+						_, _ = dockerOutput(ctx, 10*time.Second, "volume", "rm", "-f", WorkspaceVolumePrefix+hash8)
+					}
+				}
+			}
+			continue
+		}
 		idleDur := 30 * time.Minute
 		if rawIdle := item.Config.Labels["quench.idle_timeout"]; rawIdle != "" {
 			if parsed, pErr := time.ParseDuration(rawIdle); pErr == nil && parsed > 0 {
@@ -735,6 +771,44 @@ func securityArgs(s config.SandboxConfig) []string {
 		out = append(out, "--user", u)
 	}
 	return out
+}
+
+// isOrphanWorkspace returns true only when projectDir is a local absolute path that
+// explicitly no longer exists on disk (e.g. a deleted git worktree).
+func isOrphanWorkspace(projectDir string) bool {
+	p := strings.TrimSpace(projectDir)
+	if p == "" {
+		return false
+	}
+	native := filepath.FromSlash(p)
+	if !filepath.IsAbs(native) {
+		return false
+	}
+	_, err := os.Stat(native)
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// DockerHostOverrideWarning returns a human-readable warning when DOCKER_HOST is set in the
+// environment and overrides Docker context selection (e.g. a non-default context like kiri/colima).
+func DockerHostOverrideWarning(ctx context.Context) string {
+	host := strings.TrimSpace(os.Getenv("DOCKER_HOST"))
+	if host == "" {
+		return ""
+	}
+	activeCtx, _ := dockerOutput(ctx, 3*time.Second, "context", "show")
+	return formatDockerHostWarning(host, strings.TrimSpace(activeCtx))
+}
+
+func formatDockerHostWarning(dockerHost, activeContext string) string {
+	h := strings.TrimSpace(dockerHost)
+	if h == "" {
+		return ""
+	}
+	c := strings.TrimSpace(activeContext)
+	if c != "" && c != "default" {
+		return fmt.Sprintf("DOCKER_HOST=%q is set and overrides active Docker context %q; unset DOCKER_HOST to use context %q", h, c, c)
+	}
+	return fmt.Sprintf("DOCKER_HOST=%q is set and overrides Docker context selection; unset DOCKER_HOST if unintended", h)
 }
 
 // IsRemoteDockerContext reports whether the active Docker daemon is remote

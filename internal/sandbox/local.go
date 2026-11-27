@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"time"
 
 	"github.com/akhanatoon/quench/internal/config"
@@ -33,8 +35,12 @@ func (l *LocalSandbox) EnsureWarm(ctx context.Context) error {
 }
 
 func (l *LocalSandbox) Exec(ctx context.Context, workingDir string, command string, timeout time.Duration) (ExecResult, error) {
+	return l.ExecWithEnv(ctx, workingDir, "", command, nil, timeout)
+}
+
+func (l *LocalSandbox) ExecWithEnv(ctx context.Context, workingDir string, _ string, command string, env map[string]string, timeout time.Duration) (ExecResult, error) {
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = 120 * time.Second
 	}
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -48,6 +54,18 @@ func (l *LocalSandbox) Exec(ctx context.Context, workingDir string, command stri
 	cmd.Dir = l.projectDir
 	if workingDir != "" {
 		cmd.Dir = filepath.Join(l.projectDir, filepath.FromSlash(workingDir))
+	}
+	if len(env) > 0 {
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		merged := append([]string{}, os.Environ()...)
+		for _, k := range keys {
+			merged = append(merged, k+"="+env[k])
+		}
+		cmd.Env = merged
 	}
 	cmd.WaitDelay = 2 * time.Second
 

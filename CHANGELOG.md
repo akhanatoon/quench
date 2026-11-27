@@ -5,6 +5,15 @@ All notable changes to `quench` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-11-27
+
+### Added
+- **Load config from any git ref (`--config origin/main:quench.yaml`)**: `quench run` and `quench doctor` accept `--config <path | ref:path>`, reading `quench.yaml` directly from git via `git show` so older branches and worktrees need zero manual file copying (`Q-008`).
+- **Per-check environment variables (`checks[].env`)**: Declare `env: { CGO_ENABLED: "1" }` directly on checks in `quench.yaml`; forwarded to both `--local` and warm Docker `exec -e`, and hashed into memoization cache keys (`Q-005`).
+- **`DOCKER_HOST` context override warning**: `quench doctor` (`docker-env` `[WARN]`) and `quench run` (Docker mode `stderr`) warn clearly when `DOCKER_HOST` overrides the active Docker context (`Q-003`).
+- **Orphan worktree container GC**: `quench warm gc` (and automatic background GC) immediately removes managed warm containers (and copy-mode workspace volumes) whose `quench.project_dir` no longer exists on disk (`Q-009`).
+- **Monorepo timeout ergonomics (`default_timeout` & `--timeout`)**: Bumped default per-check timeout from `60s` to `120s`, added top-level `default_timeout` in `quench.yaml`, and added `quench run --timeout <duration>` (`Q-001`).
+
 ## [0.1.2] - 2026-11-26
 
 ### Added
@@ -45,6 +54,7 @@ Initial public alpha release of `quench` — a single-binary Go CLI and native `
   - Commands: `init`, `run`, `watch`, `warm`, `hook`, `bench`, `doctor`, and `mcp` (`install --client claude|codex|cursor|opencode`).
   - MCP tools (`verify_changes`, `sandbox_status`, `sandbox_reset`) confined to the startup workspace root by default (additional roots require explicit `--allow-dir` or `QUENCH_MCP_ALLOW_DIRS`).
 
+[0.1.3]: https://github.com/akhanatoon/quench/releases/tag/v0.1.3
 [0.1.2]: https://github.com/akhanatoon/quench/releases/tag/v0.1.2
 [0.1.1]: https://github.com/akhanatoon/quench/releases/tag/v0.1.1
 [0.1.0]: https://github.com/akhanatoon/quench/releases/tag/v0.1.0
