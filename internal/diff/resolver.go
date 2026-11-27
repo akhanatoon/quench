@@ -361,9 +361,125 @@ func dirHasGoFiles(dir string) bool {
 	return false
 }
 
+var tomlQuotedStringRe = regexp.MustCompile(`"([^"\\]*)"|'([^'\\]*)'`)
+
+// pythonSrcRoots returns the Python source roots declared in the repo's
+// pyproject.toml, e.g. ["src"] for a setuptools packages.find
+// where = ["src"], or ["src"] for hatch wheel
+// packages = ["src/mypkg"]. It returns nil when there is no
+// pyproject.toml or it declares no source root; callers then keep the
+// historical "src/" behaviour.
+//
+// The file is scanned with a small targeted parser rather than a TOML
+// dependency: only the keys below are read, and multi-line arrays are
+// supported by accumulating lines until the brackets balance.
+func pythonSrcRoots(repoDir string) []string {
+	data, err := os.ReadFile(filepath.Join(repoDir, "pyproject.toml"))
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var roots []string
+	add := func(root string) {
+		root = strings.Trim(path.Clean("/"+root), "/")
+		if root == "" || root == "." {
+			return
+		}
+		if _, ok := seen[root]; ok {
+			return
+		}
+		seen[root] = struct{}{}
+		roots = append(roots, root)
+	}
+	section := ""
+	key := "" // key whose array value is being accumulated
+	var buf strings.Builder
+	flush := func() {
+		if key == "" {
+			return
+		}
+		for _, m := range tomlQuotedStringRe.FindAllStringSubmatch(buf.String(), -1) {
+			val := m[1]
+			if val == "" {
+				val = m[2]
+			}
+			switch {
+			case section == "tool.setuptools.packages.find" && key == "where":
+				add(val)
+			case section == "tool.setuptools.package-dir":
+				add(val)
+			case section == "tool.hatch.build.targets.wheel" && key == "packages":
+				if i := strings.LastIndex(val, "/"); i > 0 {
+					add(val[:i])
+				}
+			}
+		}
+		key = ""
+		buf.Reset()
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.HasPrefix(trimmed, "[[") {
+			flush()
+			section = strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]")
+			continue
+		}
+		if key != "" {
+			buf.WriteString(line)
+			if strings.Count(buf.String(), "[") <= strings.Count(buf.String(), "]") {
+				flush()
+			}
+			continue
+		}
+		if eq := strings.Index(trimmed, "="); eq > 0 {
+			k := strings.TrimSpace(trimmed[:eq])
+			v := strings.TrimSpace(trimmed[eq+1:])
+			want := (section == "tool.setuptools.packages.find" && k == "where") ||
+				(section == "tool.setuptools.package-dir") ||
+				(section == "tool.hatch.build.targets.wheel" && k == "packages")
+			if !want {
+				continue
+			}
+			if strings.HasPrefix(v, "[") && strings.Count(v, "[") > strings.Count(v, "]") {
+				key = k
+				buf.WriteString(v)
+				continue
+			}
+			key = k
+			buf.WriteString(v)
+			flush()
+		}
+	}
+	flush()
+	// Longest root first, so a nested root wins over a shorter prefix.
+	sort.Slice(roots, func(i, j int) bool { return len(roots[i]) > len(roots[j]) })
+	return roots
+}
+
+// stripPythonSrcRoot removes the leading source-root segment from a
+// repo-relative slash path. roots are the source roots declared in
+// pyproject.toml; when none are declared it keeps the historical
+// behaviour of stripping a leading "src/". A path equal to a root
+// itself maps to ".".
+func stripPythonSrcRoot(dir string, roots []string) string {
+	if len(roots) == 0 {
+		roots = []string{"src"}
+	}
+	for _, root := range roots {
+		if dir == root {
+			return "."
+		}
+		if stripped, ok := strings.CutPrefix(dir, root+"/"); ok {
+			return stripped
+		}
+	}
+	return dir
+}
+
 // resolvePythonTests maps changed .py files to their matching test files, reverse-importing tests, or test directories.
 func resolvePythonTests(repoDir string, pyFiles []string) []string {
 	seen := make(map[string]struct{})
+	srcRoots := pythonSrcRoots(repoDir)
 	for _, f := range pyFiles {
 		base := path.Base(f)
 		if isPythonTestFile(base) {
@@ -373,7 +489,7 @@ func resolvePythonTests(repoDir string, pyFiles []string) []string {
 			continue
 		}
 		if base == "__init__.py" {
-			dir := strings.TrimPrefix(path.Dir(f), "src/")
+			dir := stripPythonSrcRoot(path.Dir(f), srcRoots)
 			for _, cand := range []string{
 				path.Join("tests", dir),
 				"tests",
@@ -388,10 +504,7 @@ func resolvePythonTests(repoDir string, pyFiles []string) []string {
 
 		stem := strings.TrimSuffix(base, path.Ext(base))
 		dir := path.Dir(f)
-		strippedDir := strings.TrimPrefix(dir, "src/")
-		if strippedDir == "src" {
-			strippedDir = "."
-		}
+		strippedDir := stripPythonSrcRoot(dir, srcRoots)
 
 		candidates := []string{
 			cleanSlash(path.Join(dir, "test_"+stem+".py")),
