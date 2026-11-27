@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/akhanatoon/quench/internal/config"
 	"github.com/akhanatoon/quench/internal/runner"
@@ -228,6 +229,8 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 		var args struct {
 			ProjectDir       string   `json:"project_dir"`
 			BaseRef          string   `json:"base_ref"`
+			Config           string   `json:"config"`
+			Timeout          string   `json:"timeout"`
 			Checks           []string `json:"checks"`
 			Mode             string   `json:"mode"`
 			FailFast         bool     `json:"fail_fast"`
@@ -246,9 +249,22 @@ func (s *Server) dispatchTool(ctx context.Context, p callToolParams) (*callToolR
 		if err != nil {
 			return errorToolResult(err.Error()), nil
 		}
-		cfg, _, err := config.Load(projDir)
+		var timeoutOverride time.Duration
+		if strings.TrimSpace(args.Timeout) != "" {
+			d, parseErr := time.ParseDuration(strings.TrimSpace(args.Timeout))
+			if parseErr != nil || d <= 0 {
+				return errorToolResult(fmt.Sprintf("invalid timeout %q (expected positive duration e.g. 5m)", args.Timeout)), nil
+			}
+			timeoutOverride = d
+		}
+		cfg, _, err := config.LoadFrom(projDir, args.Config)
 		if err != nil {
 			return errorToolResult(err.Error()), nil
+		}
+		if timeoutOverride > 0 {
+			for i := range cfg.Checks {
+				cfg.Checks[i].Timeout = timeoutOverride.String()
+			}
 		}
 
 		mode := cfg.Mode
@@ -477,6 +493,14 @@ func toolDefinitions() []map[string]any {
 					"base_ref": map[string]any{
 						"type":        "string",
 						"description": "Optional git ref to compare against (e.g. 'main' or 'HEAD~1').",
+					},
+					"config": map[string]any{
+						"type":        "string",
+						"description": "Optional config file path or git ref spec (e.g. 'origin/main:quench.yaml').",
+					},
+					"timeout": map[string]any{
+						"type":        "string",
+						"description": "Optional per-check timeout override as a positive Go duration (e.g. '180s', '5m').",
 					},
 					"checks": map[string]any{
 						"type":        "array",
